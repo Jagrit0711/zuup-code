@@ -12,7 +12,7 @@ import ShareModal from "@/components/ide/ShareModal";
 import { getLanguageById } from "@/lib/languages";
 import { FileTab, createFile, downloadFile, copyToClipboard } from "@/lib/fileSystem";
 import { executeCode } from "@/lib/pistonApi";
-import { loadSharedCode, loadSharedProject, getShareIdFromUrl, getProjectIdFromUrl, clearUrlParams } from "@/lib/sharing";
+import { loadSharedCode, loadSharedProject, clearUrlParams } from "@/lib/sharing";
 import { toast } from "sonner";
 
 const Index = () => {
@@ -60,54 +60,41 @@ const Index = () => {
   useEffect(() => {
     console.log('Debug: useEffect triggered, checking for shared content...');
     
-    // Check for single file share
-    const shareId = getShareIdFromUrl();
-    console.log('Debug: Share ID from URL:', shareId);
+    // Check for single file share (URL-encoded)
+    const sharedCode = loadSharedCode();
+    console.log('Debug: Loaded shared code:', sharedCode);
     
-    if (shareId) {
-      const sharedCode = loadSharedCode(shareId);
-      console.log('Debug: Loaded shared code:', sharedCode);
-      
-      if (sharedCode) {
-        const sharedFile = createFile(
-          sharedCode.fileName,
-          sharedCode.language,
-          sharedCode.code
-        );
-        setFiles([sharedFile]);
-        setActiveFileId(sharedFile.id);
-        clearUrlParams();
-        toast.success(`Loaded shared code: ${sharedCode.fileName}`);
-        return;
-      } else {
-        console.log('Debug: No shared code found for ID:', shareId);
-      }
-    }
-
-    // Check for project share
-    const projectId = getProjectIdFromUrl();
-    if (projectId) {
-      const sharedProject = loadSharedProject(projectId);
-      if (sharedProject) {
-        const projectFiles = sharedProject.files.map(file => 
-          createFile(file.fileName, file.language, file.code)
-        );
-        setFiles(projectFiles);
-        const mainFile = projectFiles.find(f => f.name === sharedProject.files.find(sf => sf.id === sharedProject.mainFileId)?.fileName) || projectFiles[0];
-        setActiveFileId(mainFile.id);
-        clearUrlParams();
-        toast.success(`Loaded shared project: ${sharedProject.name}`, {
-          description: `${projectFiles.length} files loaded`
-        });
-        return;
-      }
-    }
-
-    // If we reach here and there was a shareId or projectId but no data found
-    if (shareId || projectId) {
-      toast.error("Shared content not found or expired");
+    if (sharedCode) {
+      const sharedFile = createFile(
+        sharedCode.fileName,
+        sharedCode.language,
+        sharedCode.code
+      );
+      setFiles([sharedFile]);
+      setActiveFileId(sharedFile.id);
       clearUrlParams();
+      toast.success(`Loaded shared code: ${sharedCode.fileName}`);
+      return;
     }
+
+    // Check for project share (URL-encoded)
+    const sharedProject = loadSharedProject();
+    console.log('Debug: Loaded shared project:', sharedProject);
+    
+    if (sharedProject) {
+      const projectFiles = sharedProject.files.map(file => 
+        createFile(file.fileName, file.language, file.code)
+      );
+      setFiles(projectFiles);
+      const mainFile = projectFiles.find(f => f.name === sharedProject.mainFileName) || projectFiles[0];
+      setActiveFileId(mainFile.id);
+      clearUrlParams();
+      toast.success(`Loaded shared project: ${sharedProject.name}`, {
+        description: `${projectFiles.length} files loaded`
+      });
+      return;
+    }
+  }, []);
   }, []);
 
   const activeFile = files.find((f) => f.id === activeFileId) || files[0];

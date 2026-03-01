@@ -1,19 +1,15 @@
-// Sharing utilities for local code storage and sharing
+// URL-based sharing utilities (no localStorage needed)
 
 export interface SharedCode {
-  id: string;
   fileName: string;
   code: string;
   language: string;
-  createdAt: string;
 }
 
 export interface SharedProject {
-  id: string;
   name: string;
   files: SharedCode[];
-  createdAt: string;
-  mainFileId: string;
+  mainFileName: string;
 }
 
 // Get the base URL for sharing (production or local)
@@ -25,161 +21,85 @@ function getBaseUrl(): string {
   return 'https://code.zuup.dev';
 }
 
-export function saveSharedCode(fileName: string, code: string, language: string): string {
-  // Generate unique ID for this share
-  const shareId = Date.now().toString(36) + Math.random().toString(36).substr(2);
-  
-  // Create shared code object
-  const sharedCode: SharedCode = {
-    id: shareId,
-    fileName,
-    code,
-    language,
-    createdAt: new Date().toISOString(),
-  };
-  
-  // Save to localStorage
-  localStorage.setItem(`shared_${shareId}`, JSON.stringify(sharedCode));
-  
-  // Also maintain a list of all shared codes for potential cleanup
-  const sharedList = getSharedCodesList();
-  sharedList.push({
-    id: shareId,
-    fileName,
-    createdAt: sharedCode.createdAt,
-  });
-  localStorage.setItem('shared_codes_list', JSON.stringify(sharedList));
-  
-  return shareId;
+// Encode data to base64 URL-safe string
+function encodeData(data: any): string {
+  const jsonString = JSON.stringify(data);
+  const base64 = btoa(unescape(encodeURIComponent(jsonString)));
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
-export function saveSharedProject(name: string, files: Array<{fileName: string, code: string, language: string}>, mainFileId?: string): string {
-  // Generate unique ID for this project
-  const projectId = Date.now().toString(36) + Math.random().toString(36).substr(2);
-  
-  // Create shared codes for each file
-  const sharedFiles: SharedCode[] = files.map((file, index) => ({
-    id: `${projectId}_file_${index}`,
-    fileName: file.fileName,
-    code: file.code,
-    language: file.language,
-    createdAt: new Date().toISOString(),
-  }));
-  
-  // Create shared project object
-  const sharedProject: SharedProject = {
-    id: projectId,
-    name,
-    files: sharedFiles,
-    createdAt: new Date().toISOString(),
-    mainFileId: mainFileId || sharedFiles[0]?.id || '',
-  };
-  
-  // Save to localStorage
-  localStorage.setItem(`project_${projectId}`, JSON.stringify(sharedProject));
-  
-  // Also maintain a list of all shared projects
-  const projectList = getSharedProjectsList();
-  projectList.push({
-    id: projectId,
-    name,
-    createdAt: sharedProject.createdAt,
-  });
-  localStorage.setItem('shared_projects_list', JSON.stringify(projectList));
-  
-  return projectId;
-}
-
-export function loadSharedCode(shareId: string): SharedCode | null {
+// Decode base64 URL-safe string to data
+function decodeData(encoded: string): any {
   try {
-    const stored = localStorage.getItem(`shared_${shareId}`);
-    return stored ? JSON.parse(stored) : null;
+    // Restore padding and characters
+    let base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+    while (base64.length % 4) {
+      base64 += '=';
+    }
+    const jsonString = decodeURIComponent(escape(atob(base64)));
+    return JSON.parse(jsonString);
   } catch (error) {
-    console.error('Error loading shared code:', error);
+    console.error('Error decoding data:', error);
     return null;
   }
 }
 
-export function loadSharedProject(projectId: string): SharedProject | null {
-  try {
-    const stored = localStorage.getItem(`project_${projectId}`);
-    return stored ? JSON.parse(stored) : null;
-  } catch (error) {
-    console.error('Error loading shared project:', error);
-    return null;
-  }
-}
-
-export function deleteSharedCode(shareId: string): void {
-  localStorage.removeItem(`shared_${shareId}`);
-  
-  // Update the list
-  const sharedList = getSharedCodesList().filter(item => item.id !== shareId);
-  localStorage.setItem('shared_codes_list', JSON.stringify(sharedList));
-}
-
-export function deleteSharedProject(projectId: string): void {
-  localStorage.removeItem(`project_${projectId}`);
-  
-  // Update the list
-  const projectList = getSharedProjectsList().filter(item => item.id !== projectId);
-  localStorage.setItem('shared_projects_list', JSON.stringify(projectList));
-}
-
-export function getSharedCodesList(): Array<{id: string, fileName: string, createdAt: string}> {
-  try {
-    const stored = localStorage.getItem('shared_codes_list');
-    return stored ? JSON.parse(stored) : [];
-  } catch (error) {
-    return [];
-  }
-}
-
-export function getSharedProjectsList(): Array<{id: string, name: string, createdAt: string}> {
-  try {
-    const stored = localStorage.getItem('shared_projects_list');
-    return stored ? JSON.parse(stored) : [];
-  } catch (error) {
-    return [];
-  }
-}
-
-export function generateShareUrl(shareId: string): string {
+export function generateShareUrl(fileName: string, code: string, language: string): string {
+  const shareData: SharedCode = { fileName, code, language };
+  const encoded = encodeData(shareData);
   const baseUrl = getBaseUrl();
-  return `${baseUrl}/${shareId}`;
+  return `${baseUrl}/s/${encoded}`;
 }
 
-export function generateProjectUrl(projectId: string): string {
+export function generateProjectUrl(name: string, files: Array<{fileName: string, code: string, language: string}>, mainFileName?: string): string {
+  const projectData: SharedProject = {
+    name,
+    files: files.map(f => ({ fileName: f.fileName, code: f.code, language: f.language })),
+    mainFileName: mainFileName || files[0]?.fileName || ''
+  };
+  const encoded = encodeData(projectData);
   const baseUrl = getBaseUrl();
-  return `${baseUrl}/project/${projectId}`;
+  return `${baseUrl}/p/${encoded}`;
 }
 
-export function getShareIdFromUrl(): string | null {
+export function loadSharedCode(): SharedCode | null {
   const path = window.location.pathname;
   console.log('Debug: Current pathname:', path);
   
-  // Handle /shareId format
-  const match = path.match(/^\/([a-zA-Z0-9]+)$/);
-  if (match) {
-    console.log('Debug: Found share ID:', match[1]);
-    return match[1];
+  // Handle /s/encoded format for single files
+  const shareMatch = path.match(/^\/s\/([A-Za-z0-9\-_]+)$/);
+  if (shareMatch) {
+    console.log('Debug: Found encoded share data:', shareMatch[1]);
+    const decoded = decodeData(shareMatch[1]);
+    return decoded;
   }
   
-  // Fallback to query parameter for backwards compatibility
-  const params = new URLSearchParams(window.location.search);
-  const queryShareId = params.get('shared');
-  if (queryShareId) {
-    console.log('Debug: Found query share ID:', queryShareId);
+  return null;
+}
+
+export function loadSharedProject(): SharedProject | null {
+  const path = window.location.pathname;
+  console.log('Debug: Current pathname:', path);
+  
+  // Handle /p/encoded format for projects
+  const projectMatch = path.match(/^\/p\/([A-Za-z0-9\-_]+)$/);
+  if (projectMatch) {
+    console.log('Debug: Found encoded project data:', projectMatch[1]);
+    const decoded = decodeData(projectMatch[1]);
+    return decoded;
   }
   
-  return queryShareId;
+  return null;
+}
+
+export function getShareIdFromUrl(): string | null {
+  // Legacy support - no longer needed with URL encoding
+  return null;
 }
 
 export function getProjectIdFromUrl(): string | null {
-  const path = window.location.pathname;
-  // Handle /project/projectId format
-  const match = path.match(/^\/project\/([a-zA-Z0-9]+)$/);
-  return match ? match[1] : null;
+  // Legacy support - no longer needed with URL encoding
+  return null;
 }
 
 export function clearUrlParams(): void {

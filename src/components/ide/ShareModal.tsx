@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { X, Copy, Check, Share2, FolderPlus, File } from "lucide-react";
 import { copyToClipboard } from "@/lib/fileSystem";
-import { generateShareUrl, generateProjectUrl, saveSharedCode, saveSharedProject } from "@/lib/sharing";
+import { generateShareUrl, generateProjectUrl } from "@/lib/sharing";
 
 interface ShareModalProps {
   isOpen: boolean;
@@ -28,18 +28,20 @@ const ShareModal = ({ isOpen, onClose, fileName, code, language, allFiles }: Sha
   const generateShareLink = () => {
     setIsSharing(true);
     
-    if (shareType === "file") {
-      // Generate single file share
-      const shareId = saveSharedCode(fileName, code, language);
-      const url = generateShareUrl(shareId);
-      setShareUrl(url);
-    } else {
-      // Generate project share
-      if (allFiles && allFiles.length > 0) {
-        const projectId = saveSharedProject(`${fileName}-project`, allFiles, fileName);
-        const url = generateProjectUrl(projectId);
-        setProjectUrl(url);
+    try {
+      if (shareType === "file") {
+        // Generate single file share with URL encoding
+        const url = generateShareUrl(fileName, code, language);
+        setShareUrl(url);
+      } else {
+        // Generate project share with URL encoding
+        if (allFiles && allFiles.length > 0) {
+          const url = generateProjectUrl(`${fileName}-project`, allFiles, fileName);
+          setProjectUrl(url);
+        }
       }
+    } catch (error) {
+      console.error('Error generating share URL:', error);
     }
     
     setIsSharing(false);
@@ -129,8 +131,8 @@ const ShareModal = ({ isOpen, onClose, fileName, code, language, allFiles }: Sha
               </div>
               <p className="text-sm text-muted-foreground">
                 {shareType === "file" 
-                  ? `Your code "${fileName}" has been saved and is ready to share.`
-                  : `Your project with ${allFiles?.length} files has been saved and is ready to share.`
+                  ? `Your code "${fileName}" is embedded in the URL and ready to share.`
+                  : `Your project with ${allFiles?.length} files is embedded in the URL and ready to share.`
                 }
               </p>
             </div>
@@ -155,7 +157,7 @@ const ShareModal = ({ isOpen, onClose, fileName, code, language, allFiles }: Sha
                 </button>
               </div>
               <p className="text-xs text-muted-foreground">
-                URL format: <span className="font-mono text-primary">code.zuup.dev/{shareType === "project" ? "project/" : ""}{shareType === "file" ? "abc123" : "def456"}</span>
+                URL format: <span className="font-mono text-primary">code.zuup.dev/{shareType === "project" ? "p" : "s"}/[encoded-data]</span>
               </p>
             </div>
 
@@ -175,7 +177,7 @@ const ShareModal = ({ isOpen, onClose, fileName, code, language, allFiles }: Sha
             </div>
 
             <div className="text-xs text-muted-foreground text-center pt-2">
-              Share links work on both localhost and code.zuup.dev production site.
+              Share links work instantly across all browsers - no storage needed!
             </div>
           </div>
         )}
