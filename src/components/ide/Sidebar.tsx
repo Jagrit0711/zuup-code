@@ -1,58 +1,69 @@
-import { ChevronRight, File, FolderOpen, Plus, Settings } from "lucide-react";
-import { languages, LanguageConfig } from "@/lib/languages";
+import { ChevronRight, File, FolderOpen, Plus, Settings, FileCode } from "lucide-react";
+import { languages } from "@/lib/languages";
+import { FileTab } from "@/lib/fileSystem";
 
 interface SidebarProps {
-  activeLanguage: string;
-  onSelectLanguage: (id: string) => void;
+  files: FileTab[];
+  activeFileId: string;
+  onSelectFile: (id: string) => void;
+  onNewFile: () => void;
+  onOpenSettings: () => void;
 }
 
-const Sidebar = ({ activeLanguage, onSelectLanguage }: SidebarProps) => {
+const Sidebar = ({ files, activeFileId, onSelectFile, onNewFile, onOpenSettings }: SidebarProps) => {
   return (
-    <div className="flex h-full w-56 flex-col glass-strong border-r border-border">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+    <div className="flex h-full w-52 flex-col glass-strong border-r border-border shrink-0">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
+        <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
           Explorer
         </span>
-        <button className="rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
+        <button
+          onClick={onNewFile}
+          className="rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+          title="New File"
+        >
           <Plus size={14} />
         </button>
       </div>
 
-      {/* Project tree */}
       <div className="flex-1 overflow-y-auto px-2 py-2">
-        <div className="mb-2">
-          <div className="flex items-center gap-1 rounded px-2 py-1.5 text-xs font-medium text-muted-foreground">
-            <FolderOpen size={14} className="text-primary" />
+        <div className="mb-1">
+          <div className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium text-muted-foreground">
+            <FolderOpen size={13} className="text-primary" />
             <span>zuup-project</span>
           </div>
         </div>
 
         <div className="ml-2 space-y-0.5">
-          {languages.map((lang: LanguageConfig) => (
+          {files.map((file) => (
             <button
-              key={lang.id}
-              onClick={() => onSelectLanguage(lang.id)}
-              className={`flex w-full items-center gap-2 rounded px-3 py-1.5 text-xs font-mono transition-all ${
-                activeLanguage === lang.id
+              key={file.id}
+              onClick={() => onSelectFile(file.id)}
+              className={`flex w-full items-center gap-2 rounded px-3 py-1.5 text-[11px] font-mono transition-all ${
+                file.id === activeFileId
                   ? "bg-primary/10 text-primary glow-primary-sm"
                   : "text-muted-foreground hover:bg-secondary hover:text-foreground"
               }`}
             >
-              <File size={12} />
-              <span>main{lang.extension}</span>
-              {activeLanguage === lang.id && (
-                <ChevronRight size={10} className="ml-auto" />
+              <FileCode size={11} />
+              <span className="truncate">{file.name}</span>
+              {file.isDirty && (
+                <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+              )}
+              {file.id === activeFileId && (
+                <ChevronRight size={10} className="ml-auto shrink-0" />
               )}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Footer */}
-      <div className="border-t border-border p-3">
-        <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
-          <Settings size={14} />
+      <div className="border-t border-border p-2">
+        <button
+          onClick={onOpenSettings}
+          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+        >
+          <Settings size={13} />
           <span>Settings</span>
         </button>
       </div>

@@ -1,10 +1,13 @@
+import { LucideIcon } from "lucide-react";
+
 export interface LanguageConfig {
   id: string;
   label: string;
   monacoId: string;
-  icon: string;
   extension: string;
   defaultCode: string;
+  pistonLang: string;
+  pistonVersion: string;
 }
 
 export const languages: LanguageConfig[] = [
@@ -12,13 +15,14 @@ export const languages: LanguageConfig[] = [
     id: "python",
     label: "Python",
     monacoId: "python",
-    icon: "🐍",
     extension: ".py",
+    pistonLang: "python",
+    pistonVersion: "3.10.0",
     defaultCode: `# Welcome to Zuup Code — Python
 # Write your Python code here
 
 def greet(name):
-    return f"Hello, {name}! Welcome to Zuup Code 🚀"
+    return f"Hello, {name}! Welcome to Zuup Code"
 
 print(greet("Engineer"))
 
@@ -31,14 +35,12 @@ for i in range(1, 6):
     id: "c",
     label: "C (Arduino)",
     monacoId: "c",
-    icon: "⚡",
     extension: ".c",
+    pistonLang: "c",
+    pistonVersion: "10.2.0",
     defaultCode: `// Welcome to Zuup Code — C / Arduino
-// Write your C or Arduino code here
-
 #include <stdio.h>
 
-// Simulated Arduino setup
 void setup() {
     printf("Zuup Code initialized!\\n");
     printf("LED on pin 13 ready.\\n");
@@ -61,8 +63,9 @@ int main() {
     id: "html",
     label: "HTML",
     monacoId: "html",
-    icon: "🌐",
     extension: ".html",
+    pistonLang: "",
+    pistonVersion: "",
     defaultCode: `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -84,7 +87,7 @@ int main() {
 </head>
 <body>
   <div>
-    <h1>Hello from Zuup Code! 🚀</h1>
+    <h1>Hello from Zuup Code!</h1>
     <p>Start building amazing things.</p>
   </div>
 </body>
@@ -95,10 +98,10 @@ int main() {
     id: "css",
     label: "CSS",
     monacoId: "css",
-    icon: "🎨",
     extension: ".css",
+    pistonLang: "",
+    pistonVersion: "",
     defaultCode: `/* Zuup Code — CSS */
-/* Style your components here */
 
 :root {
   --zuup-primary: #e63462;
@@ -110,12 +113,6 @@ body {
   background-color: var(--zuup-bg);
   color: var(--zuup-text);
   font-family: 'Inter', sans-serif;
-}
-
-.container {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 2rem;
 }
 
 .btn-primary {
@@ -138,10 +135,10 @@ body {
     id: "javascript",
     label: "JavaScript",
     monacoId: "javascript",
-    icon: "⚙️",
     extension: ".js",
+    pistonLang: "javascript",
+    pistonVersion: "18.15.0",
     defaultCode: `// Welcome to Zuup Code — JavaScript
-// Write your JavaScript code here
 
 const zuup = {
   name: "Zuup Code",
@@ -149,32 +146,22 @@ const zuup = {
   mission: "Real Engineering. Real Futures."
 };
 
-console.log(\`🚀 \${zuup.name} v\${zuup.version}\`);
-console.log(\`Mission: \${zuup.mission}\`);
+console.log(zuup.name + " v" + zuup.version);
+console.log("Mission: " + zuup.mission);
 
-// Array methods
 const numbers = [1, 2, 3, 4, 5];
 const squared = numbers.map(n => n ** 2);
 console.log("Squared:", squared);
-
-// Async example
-async function fetchData() {
-  console.log("Fetching data...");
-  await new Promise(r => setTimeout(r, 1000));
-  console.log("Data loaded! ✅");
-}
-
-fetchData();
 `,
   },
   {
     id: "typescript",
     label: "TypeScript",
     monacoId: "typescript",
-    icon: "🔷",
     extension: ".ts",
+    pistonLang: "typescript",
+    pistonVersion: "5.0.3",
     defaultCode: `// Welcome to Zuup Code — TypeScript
-// Write your TypeScript code here
 
 interface Student {
   name: string;
@@ -189,7 +176,7 @@ const student: Student = {
 };
 
 function introduce(s: Student): string {
-  return \`\${s.name} (Grade \${s.grade}) — Skills: \${s.skills.join(", ")}\`;
+  return s.name + " (Grade " + s.grade + ") - Skills: " + s.skills.join(", ");
 }
 
 console.log(introduce(student));
@@ -199,13 +186,14 @@ console.log(introduce(student));
     id: "java",
     label: "Java",
     monacoId: "java",
-    icon: "☕",
     extension: ".java",
+    pistonLang: "java",
+    pistonVersion: "15.0.2",
     defaultCode: `// Welcome to Zuup Code — Java
 
 public class Main {
     public static void main(String[] args) {
-        System.out.println("Hello from Zuup Code! 🚀");
+        System.out.println("Hello from Zuup Code!");
         
         int[] numbers = {1, 2, 3, 4, 5};
         for (int n : numbers) {
@@ -219,8 +207,9 @@ public class Main {
     id: "cpp",
     label: "C++",
     monacoId: "cpp",
-    icon: "🔧",
     extension: ".cpp",
+    pistonLang: "c++",
+    pistonVersion: "10.2.0",
     defaultCode: `// Welcome to Zuup Code — C++
 
 #include <iostream>
@@ -228,7 +217,7 @@ public class Main {
 #include <string>
 
 int main() {
-    std::cout << "Hello from Zuup Code! 🚀" << std::endl;
+    std::cout << "Hello from Zuup Code!" << std::endl;
     
     std::vector<std::string> skills = {"Arduino", "Embedded C", "PCB Design"};
     
@@ -244,17 +233,41 @@ int main() {
     id: "rust",
     label: "Rust",
     monacoId: "rust",
-    icon: "🦀",
     extension: ".rs",
+    pistonLang: "rust",
+    pistonVersion: "1.68.2",
     defaultCode: `// Welcome to Zuup Code — Rust
 
 fn main() {
-    println!("Hello from Zuup Code! 🚀");
+    println!("Hello from Zuup Code!");
     
     let skills = vec!["Embedded Systems", "Hardware", "IoT"];
     
     for (i, skill) in skills.iter().enumerate() {
         println!("{}. {}", i + 1, skill);
+    }
+}
+`,
+  },
+  {
+    id: "go",
+    label: "Go",
+    monacoId: "go",
+    extension: ".go",
+    pistonLang: "go",
+    pistonVersion: "1.16.2",
+    defaultCode: `// Welcome to Zuup Code — Go
+
+package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("Hello from Zuup Code!")
+    
+    skills := []string{"IoT", "Hardware", "Embedded"}
+    for i, skill := range skills {
+        fmt.Printf("%d. %s\\n", i+1, skill)
     }
 }
 `,

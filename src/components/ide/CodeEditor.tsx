@@ -5,15 +5,15 @@ interface CodeEditorProps {
   language: string;
   value: string;
   onChange: (value: string) => void;
+  fontSize?: number;
 }
 
-const CodeEditor = ({ language, value, onChange }: CodeEditorProps) => {
+const CodeEditor = ({ language, value, onChange, fontSize = 14 }: CodeEditorProps) => {
   const editorRef = useRef<any>(null);
 
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
 
-    // Define Zuup dark theme
     monaco.editor.defineTheme("zuup-dark", {
       base: "vs-dark",
       inherit: true,
@@ -58,42 +58,10 @@ const CodeEditor = ({ language, value, onChange }: CodeEditorProps) => {
     });
 
     monaco.editor.setTheme("zuup-dark");
-
-    editor.updateOptions({
-      fontSize: 14,
-      fontFamily: "'JetBrains Mono', monospace",
-      fontLigatures: true,
-      minimap: { enabled: true, scale: 1 },
-      smoothScrolling: true,
-      cursorBlinking: "smooth",
-      cursorSmoothCaretAnimation: "on",
-      renderWhitespace: "selection",
-      bracketPairColorization: { enabled: true },
-      autoClosingBrackets: "always",
-      autoClosingQuotes: "always",
-      autoIndent: "full",
-      formatOnPaste: true,
-      suggestOnTriggerCharacters: true,
-      quickSuggestions: {
-        other: true,
-        comments: false,
-        strings: true,
-      },
-      parameterHints: { enabled: true },
-      wordBasedSuggestions: "allDocuments",
-      tabCompletion: "on",
-      padding: { top: 16, bottom: 16 },
-      scrollBeyondLastLine: false,
-      renderLineHighlight: "all",
-      guides: {
-        bracketPairs: true,
-        indentation: true,
-      },
-    });
   };
 
   return (
-    <div className="h-full w-full overflow-hidden rounded-md">
+    <div className="h-full w-full overflow-hidden">
       <Editor
         height="100%"
         language={language}
@@ -110,16 +78,19 @@ const CodeEditor = ({ language, value, onChange }: CodeEditorProps) => {
           </div>
         }
         options={{
-          fontSize: 14,
+          fontSize,
           fontFamily: "'JetBrains Mono', monospace",
-          minimap: { enabled: true },
+          fontLigatures: true,
+          minimap: { enabled: true, scale: 1 },
           smoothScrolling: true,
           cursorBlinking: "smooth",
           cursorSmoothCaretAnimation: "on",
+          renderWhitespace: "selection",
           bracketPairColorization: { enabled: true },
           autoClosingBrackets: "always",
           autoClosingQuotes: "always",
           autoIndent: "full",
+          formatOnPaste: true,
           suggestOnTriggerCharacters: true,
           quickSuggestions: { other: true, comments: false, strings: true },
           parameterHints: { enabled: true },
@@ -127,6 +98,8 @@ const CodeEditor = ({ language, value, onChange }: CodeEditorProps) => {
           tabCompletion: "on",
           padding: { top: 16, bottom: 16 },
           scrollBeyondLastLine: false,
+          renderLineHighlight: "all",
+          guides: { bracketPairs: true, indentation: true },
         }}
       />
     </div>
