@@ -95,7 +95,6 @@ const Index = () => {
       return;
     }
   }, []);
-  }, []);
 
   const activeFile = files.find((f) => f.id === activeFileId) || files[0];
   const activeLanguage = getLanguageById(activeFile.languageId);

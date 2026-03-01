@@ -1,6 +1,5 @@
 import { Play, Save, Download, Share2, Plus, ChevronDown } from "lucide-react";
 import { LanguageConfig, languages } from "@/lib/languages";
-import zuupLogo from "@/assets/zuup-logo.png";
 
 interface TopBarProps {
   activeLanguage: LanguageConfig;
@@ -28,7 +27,7 @@ const TopBar = ({
   return (
     <div className="flex h-11 items-center justify-between border-b border-border glass-strong px-3 shrink-0">
       <div className="flex items-center gap-2.5">
-        <img src={zuupLogo} alt="Zuup" className="h-6 w-6" />
+        <div className="flex h-6 w-6 items-center justify-center rounded bg-primary text-primary-foreground font-bold text-sm">Z</div>
         <div className="flex items-center gap-1">
           <span className="text-sm font-bold text-foreground">Zuup</span>
           <span className="text-sm font-light text-primary">Code</span>
