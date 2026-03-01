@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import CodeEditor from "@/components/ide/CodeEditor";
@@ -10,14 +10,14 @@ import FileTabs from "@/components/ide/FileTabs";
 import SettingsModal from "@/components/ide/SettingsModal";
 import NewFileModal from "@/components/ide/NewFileModal";
 import NewProjectModal from "@/components/ide/NewProjectModal";
+import type { NewProjectData } from "@/components/ide/NewProjectModal";
 import ShareModal from "@/components/ide/ShareModal";
-import { getLanguageById } from "@/lib/languages";
+import { getLanguageById, languages } from "@/lib/languages";
 import { FileTab, createFile, downloadFile, copyToClipboard } from "@/lib/fileSystem";
 import { executeCode } from "@/lib/pistonApi";
 import { loadSharedCode, loadSharedProject, clearUrlParams, getShareIdFromUrl } from "@/lib/sharing";
-import { ProjectTemplate } from "@/lib/projectTemplates";
 import { useAuth } from "@/contexts/AuthContext";
-import { createProject, updateProject, getProject } from "@/lib/projectStorage";
+import { createProject, updateProject, getProject, type SavedProject } from "@/lib/projectStorage";
 import { toast } from "sonner";
 
 const Index = () => {
@@ -31,7 +31,10 @@ const Index = () => {
 
   // Cloud project state
   const [cloudProjectId, setCloudProjectId] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
   // Load cloud project if ?project=<id> is in URL
   useEffect(() => {
@@ -45,6 +48,7 @@ const Index = () => {
           setFiles(loadedFiles);
           setActiveFileId(loadedFiles[0].id);
           setCloudProjectId(project.id);
+          setProjectName(project.name);
           toast.success(`Opened "${project.name}"`);
         }
       });
@@ -89,12 +93,7 @@ const Index = () => {
 
   // Check for shared code or project in URL on component mount
   useEffect(() => {
-    console.log('Debug: useEffect triggered, checking for shared content...');
-    
-    // Check for single file share (URL-encoded)
     const sharedCode = loadSharedCode();
-    console.log('Debug: Loaded shared code:', sharedCode);
-    
     if (sharedCode) {
       const sharedFile = createFile(
         sharedCode.fileName,
@@ -108,10 +107,7 @@ const Index = () => {
       return;
     }
 
-    // Check for project share (URL-encoded)
     const sharedProject = loadSharedProject();
-    console.log('Debug: Loaded shared project:', sharedProject);
-    
     if (sharedProject) {
       const projectFiles = sharedProject.files.map(file => 
         createFile(file.fileName, file.language, file.code)
@@ -134,7 +130,16 @@ const Index = () => {
     setFiles((prev) =>
       prev.map((f) => (f.id === activeFileId ? { ...f, content, isDirty: true } : f))
     );
-  }, [activeFileId]);
+    setHasUnsavedChanges(true);
+
+    // Auto-save to cloud after 3 seconds of inactivity
+    if (cloudProjectId && user) {
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = setTimeout(() => {
+        performCloudSave();
+      }, 3000);
+    }
+  }, [activeFileId, cloudProjectId, user]);
 
   const handleLanguageChange = useCallback((langId: string) => {
     const lang = getLanguageById(langId);
@@ -154,25 +159,57 @@ const Index = () => {
     setActiveFileId(file.id);
   }, []);
 
-  const handleNewProject = useCallback((template: ProjectTemplate) => {
-    // Convert template files to FileTab objects
-    const projectFiles: FileTab[] = template.files.map(file => {
-      const fileName = file.path === "/" ? file.fileName : `${file.path.replace(/\/$/, "")}/${file.fileName}`;
-      return createFile(fileName, file.language, file.content);
-    });
-    
-    // Find the main file
-    const mainFile = projectFiles.find(f => 
-      f.name.includes(template.mainFile) || f.name === template.mainFile
-    ) || projectFiles[0];
-    
+  const handleNewProject = useCallback(async (data: NewProjectData) => {
+    let projectFiles: FileTab[] = [];
+
+    if (data.template) {
+      // From template
+      projectFiles = data.template.files.map(file => {
+        const fileName = file.path === "/" ? file.fileName : `${file.path.replace(/\/$/, "")}/${file.fileName}`;
+        return createFile(fileName, file.language, file.content);
+      });
+    } else if (data.uploadedFiles.length > 0) {
+      // From uploaded files
+      projectFiles = data.uploadedFiles.map(file => {
+        const ext = file.name.split(".").pop()?.toLowerCase() || "";
+        const lang = languages.find(l => l.extension === `.${ext}`)?.id || data.language;
+        return createFile(file.name, lang, file.content);
+      });
+    } else {
+      // Blank project
+      const lang = getLanguageById(data.language);
+      projectFiles = [createFile(`main${lang.extension}`, data.language, lang.defaultCode)];
+    }
+
+    const mainFile = data.template
+      ? projectFiles.find(f => f.name.includes(data.template!.mainFile)) || projectFiles[0]
+      : projectFiles[0];
+
     setFiles(projectFiles);
     setActiveFileId(mainFile.id);
-    
-    toast.success(`Created project: ${template.name}`, {
-      description: `${projectFiles.length} files loaded`
-    });
-  }, []);
+    setProjectName(data.name);
+
+    // Save to cloud immediately if signed in
+    if (user) {
+      const fileData = projectFiles.map(f => ({
+        name: f.name,
+        language: f.languageId,
+        content: f.content,
+      }));
+      const saved = await createProject(data.name, data.description, data.language, fileData);
+      if (saved) {
+        setCloudProjectId(saved.id);
+        toast.success(`Created "${data.name}" — saved to cloud ☁️`);
+      } else {
+        toast.success(`Created "${data.name}"`, { description: "Could not save to cloud" });
+      }
+    } else {
+      toast.success(`Created "${data.name}"`, {
+        description: "Sign in to save to cloud",
+      });
+    }
+    setHasUnsavedChanges(false);
+  }, [user]);
 
   const handleCloseFile = useCallback((id: string) => {
     setFiles((prev) => {
@@ -191,14 +228,16 @@ const Index = () => {
 
   const handleSave = useCallback(() => {
     setFiles((prev) => prev.map((f) => (f.id === activeFileId ? { ...f, isDirty: false } : f)));
-    toast.success(`Saved ${activeFile.name}`);
-  }, [activeFileId, activeFile.name]);
-
-  const handleCloudSave = useCallback(async () => {
-    if (!user) {
-      toast.error("Sign in to save to cloud");
-      return;
+    // If signed in + cloud project, also cloud save
+    if (user && cloudProjectId) {
+      performCloudSave();
+    } else {
+      toast.success(`Saved ${activeFile.name}`);
     }
+  }, [activeFileId, activeFile.name, user, cloudProjectId]);
+
+  const performCloudSave = useCallback(async () => {
+    if (!user || isSaving) return;
     setIsSaving(true);
     const projectFiles = files.map((f) => ({
       name: f.name,
@@ -207,37 +246,52 @@ const Index = () => {
     }));
     try {
       if (cloudProjectId) {
-        // Update existing
         const updated = await updateProject(cloudProjectId, {
           files: projectFiles,
           language: activeFile.languageId,
         });
         if (updated) {
-          toast.success("Project saved to cloud ☁️");
-        } else {
-          toast.error("Failed to save");
+          setHasUnsavedChanges(false);
+          setFiles(prev => prev.map(f => ({ ...f, isDirty: false })));
         }
       } else {
-        // Create new
-        const name = files.length === 1 ? activeFile.name : `Project-${Date.now().toString(36)}`;
-        const created = await createProject(
-          name,
-          "",
-          activeFile.languageId,
-          projectFiles
-        );
+        const name = projectName || activeFile.name;
+        const created = await createProject(name, "", activeFile.languageId, projectFiles);
         if (created) {
           setCloudProjectId(created.id);
+          setProjectName(created.name);
+          setHasUnsavedChanges(false);
+          setFiles(prev => prev.map(f => ({ ...f, isDirty: false })));
           toast.success("Project saved to cloud ☁️");
-        } else {
-          toast.error("Failed to save");
         }
       }
     } catch {
       toast.error("Error saving to cloud");
     }
     setIsSaving(false);
-  }, [user, files, activeFile, cloudProjectId]);
+  }, [user, files, activeFile, cloudProjectId, projectName, isSaving]);
+
+  const handleCloudSave = useCallback(async () => {
+    if (!user) {
+      toast.error("Sign in to save to cloud");
+      return;
+    }
+    await performCloudSave();
+    if (!isSaving) toast.success("Saved to cloud ☁️");
+  }, [user, performCloudSave, isSaving]);
+
+  // Upload files into current project
+  const handleUploadFiles = useCallback((uploadedFiles: { name: string; content: string }[]) => {
+    const newFiles = uploadedFiles.map(f => {
+      const ext = f.name.split(".").pop()?.toLowerCase() || "";
+      const lang = languages.find(l => l.extension === `.${ext}`)?.id || activeFile.languageId;
+      return createFile(f.name, lang, f.content);
+    });
+    setFiles(prev => [...prev, ...newFiles]);
+    if (newFiles.length > 0) setActiveFileId(newFiles[0].id);
+    setHasUnsavedChanges(true);
+    toast.success(`Added ${newFiles.length} file${newFiles.length > 1 ? "s" : ""}`);
+  }, [activeFile.languageId]);
 
   const handleDownload = useCallback(() => {
     downloadFile(activeFile.name, activeFile.content);
@@ -292,6 +346,7 @@ const Index = () => {
       <TopBar
         activeLanguage={activeLanguage}
         activeFileName={activeFile.name}
+        projectName={projectName}
         onRun={handleRun}
         onSave={handleSave}
         onDownload={handleDownload}
@@ -310,9 +365,13 @@ const Index = () => {
         <Sidebar
           files={files}
           activeFileId={activeFileId}
+          projectName={projectName}
+          isCloudProject={!!cloudProjectId}
+          hasUnsavedChanges={hasUnsavedChanges}
           onSelectFile={setActiveFileId}
           onNewFile={() => setNewFileOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
+          onUploadFiles={handleUploadFiles}
         />
 
         <PanelGroup direction="vertical" className="flex-1">

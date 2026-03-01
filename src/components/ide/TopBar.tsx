@@ -8,6 +8,7 @@ import type { Profile } from "@/lib/profile";
 interface TopBarProps {
   activeLanguage: LanguageConfig;
   activeFileName: string;
+  projectName?: string | null;
   onRun: () => void;
   onSave: () => void;
   onDownload: () => void;
@@ -25,6 +26,7 @@ interface TopBarProps {
 const TopBar = ({
   activeLanguage,
   activeFileName,
+  projectName,
   onRun,
   onSave,
   onDownload,
@@ -47,6 +49,14 @@ const TopBar = ({
           <div className="flex items-center gap-1">
             <span className="text-sm font-bold text-foreground">Zuup</span>
             <span className="text-sm font-light text-primary">Code</span>
+            {projectName && (
+              <>
+                <span className="text-muted-foreground/40 mx-1">/</span>
+                <span className="text-xs text-muted-foreground max-w-[120px] truncate" title={projectName}>
+                  {projectName}
+                </span>
+              </>
+            )}
           </div>
           
           <div className="relative ml-2">
