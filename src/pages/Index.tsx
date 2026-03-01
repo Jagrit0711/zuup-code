@@ -1,175 +1,229 @@
 import { useState, useCallback } from "react";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import CodeEditor from "@/components/ide/CodeEditor";
 import Sidebar from "@/components/ide/Sidebar";
 import TopBar from "@/components/ide/TopBar";
-import OutputPanel from "@/components/ide/OutputPanel";
+import TerminalPanel from "@/components/ide/TerminalPanel";
 import HtmlPreview from "@/components/ide/HtmlPreview";
+import FileTabs from "@/components/ide/FileTabs";
+import SettingsModal from "@/components/ide/SettingsModal";
+import NewFileModal from "@/components/ide/NewFileModal";
 import { getLanguageById } from "@/lib/languages";
+import { FileTab, createFile, downloadFile, shareFile, copyToClipboard } from "@/lib/fileSystem";
+import { executeCode } from "@/lib/pistonApi";
+import { toast } from "sonner";
 
 const Index = () => {
-  const [activeLanguageId, setActiveLanguageId] = useState("python");
-  const [codes, setCodes] = useState<Record<string, string>>(() => {
-    const initial: Record<string, string> = {};
-    return initial;
-  });
+  // File management
+  const defaultFile = createFile("main.py", "python", getLanguageById("python").defaultCode);
+  const [files, setFiles] = useState<FileTab[]>([defaultFile]);
+  const [activeFileId, setActiveFileId] = useState(defaultFile.id);
+
+  // UI state
   const [output, setOutput] = useState<string[]>([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [bottomTab, setBottomTab] = useState<"output" | "terminal">("output");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [newFileOpen, setNewFileOpen] = useState(false);
 
-  const activeLanguage = getLanguageById(activeLanguageId);
-  const currentCode = codes[activeLanguageId] ?? activeLanguage.defaultCode;
+  // Settings
+  const [fontSize, setFontSize] = useState(14);
+  const [tabSize, setTabSize] = useState(2);
+  const [wordWrap, setWordWrap] = useState(false);
 
-  const handleCodeChange = useCallback(
-    (value: string) => {
-      setCodes((prev) => ({ ...prev, [activeLanguageId]: value }));
-    },
-    [activeLanguageId]
-  );
+  const activeFile = files.find((f) => f.id === activeFileId) || files[0];
+  const activeLanguage = getLanguageById(activeFile.languageId);
 
-  const handleLanguageChange = useCallback((id: string) => {
-    setActiveLanguageId(id);
+  const updateFileContent = useCallback((content: string) => {
+    setFiles((prev) =>
+      prev.map((f) => (f.id === activeFileId ? { ...f, content, isDirty: true } : f))
+    );
+  }, [activeFileId]);
+
+  const handleLanguageChange = useCallback((langId: string) => {
+    const lang = getLanguageById(langId);
+    setFiles((prev) =>
+      prev.map((f) =>
+        f.id === activeFileId
+          ? { ...f, languageId: langId, name: f.name.replace(/\.[^.]+$/, lang.extension) }
+          : f
+      )
+    );
+  }, [activeFileId]);
+
+  const handleNewFile = useCallback((name: string, languageId: string) => {
+    const lang = getLanguageById(languageId);
+    const file = createFile(name, languageId, lang.defaultCode);
+    setFiles((prev) => [...prev, file]);
+    setActiveFileId(file.id);
   }, []);
+
+  const handleCloseFile = useCallback((id: string) => {
+    setFiles((prev) => {
+      const next = prev.filter((f) => f.id !== id);
+      if (next.length === 0) {
+        const def = createFile("main.py", "python", getLanguageById("python").defaultCode);
+        setActiveFileId(def.id);
+        return [def];
+      }
+      if (activeFileId === id) {
+        setActiveFileId(next[next.length - 1].id);
+      }
+      return next;
+    });
+  }, [activeFileId]);
+
+  const handleSave = useCallback(() => {
+    setFiles((prev) => prev.map((f) => (f.id === activeFileId ? { ...f, isDirty: false } : f)));
+    toast.success(`Saved ${activeFile.name}`);
+  }, [activeFileId, activeFile.name]);
+
+  const handleDownload = useCallback(() => {
+    downloadFile(activeFile.name, activeFile.content);
+    toast.success(`Downloaded ${activeFile.name}`);
+  }, [activeFile]);
+
+  const handleShare = useCallback(async () => {
+    await copyToClipboard(activeFile.content);
+    toast.success("Code copied to clipboard");
+  }, [activeFile]);
 
   const handleRun = useCallback(async () => {
     setIsRunning(true);
+    setBottomTab("output");
     setOutput([`>>> Running ${activeLanguage.label}...`, ""]);
 
-    // Simulate execution delay
-    await new Promise((r) => setTimeout(r, 600));
+    if (activeFile.languageId === "html" || activeFile.languageId === "css") {
+      setOutput((prev) => [...prev, "[OK] Rendered in preview panel."]);
+      setIsRunning(false);
+      return;
+    }
 
-    if (activeLanguageId === "javascript" || activeLanguageId === "typescript") {
-      try {
-        const logs: string[] = [];
-        const mockConsole = {
-          log: (...args: any[]) => logs.push(args.map(String).join(" ")),
-          error: (...args: any[]) => logs.push("❌ " + args.map(String).join(" ")),
-          warn: (...args: any[]) => logs.push("⚠ " + args.map(String).join(" ")),
-        };
-        const fn = new Function("console", currentCode);
-        fn(mockConsole);
-        setOutput((prev) => [
-          ...prev,
-          ...logs,
-          "",
-          "✅ Execution completed successfully.",
-        ]);
-      } catch (err: any) {
-        setOutput((prev) => [
-          ...prev,
-          `Error: ${err.message}`,
-          "",
-          "❌ Execution failed.",
-        ]);
-      }
-    } else if (activeLanguageId === "html") {
+    if (activeLanguage.pistonLang) {
+      const result = await executeCode(activeLanguage.pistonLang, activeLanguage.pistonVersion, activeFile.content);
       setOutput((prev) => [
         ...prev,
-        "✅ HTML rendered in preview panel.",
+        ...result.output,
+        "",
+        result.success ? "[OK] Execution completed." : "[ERROR] Execution failed.",
       ]);
     } else {
-      // Simulate output for non-JS languages
-      const simulatedOutputs: Record<string, string[]> = {
-        python: [
-          "Hello, Engineer! Welcome to Zuup Code 🚀",
-          "1 squared = 1",
-          "2 squared = 4",
-          "3 squared = 9",
-          "4 squared = 16",
-          "5 squared = 25",
-        ],
-        c: [
-          "Zuup Code initialized!",
-          "LED on pin 13 ready.",
-          "Blink!",
-          "Blink!",
-          "Blink!",
-        ],
-        java: [
-          "Hello from Zuup Code! 🚀",
-          "1 squared = 1",
-          "2 squared = 4",
-          "3 squared = 9",
-          "4 squared = 16",
-          "5 squared = 25",
-        ],
-        cpp: [
-          "Hello from Zuup Code! 🚀",
-          "Skill: Arduino",
-          "Skill: Embedded C",
-          "Skill: PCB Design",
-        ],
-        rust: [
-          "Hello from Zuup Code! 🚀",
-          "1. Embedded Systems",
-          "2. Hardware",
-          "3. IoT",
-        ],
-        css: ["✅ CSS parsed successfully. No errors found."],
-      };
-
-      const simulated = simulatedOutputs[activeLanguageId] || [
-        "✅ Code compiled successfully.",
-      ];
-      setOutput((prev) => [
-        ...prev,
-        ...simulated,
-        "",
-        "✅ Execution completed (simulated).",
-        "⚠ Note: Connect a backend for real execution.",
-      ]);
+      setOutput((prev) => [...prev, "[WARN] No runtime available for this language.", ""]);
     }
 
     setIsRunning(false);
-  }, [activeLanguageId, activeLanguage, currentCode]);
+  }, [activeLanguage, activeFile]);
 
   const handleClearOutput = useCallback(() => {
     setOutput([]);
   }, []);
 
-  const showHtmlPreview = activeLanguageId === "html";
+  const handleTerminalCommand = useCallback((cmd: string) => {
+    // Commands from terminal can trigger run
+    if (cmd === "run") {
+      handleRun();
+    }
+  }, [handleRun]);
+
+  const showHtmlPreview = activeFile.languageId === "html" || activeFile.languageId === "css";
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-background">
-      {/* Top Bar */}
       <TopBar
         activeLanguage={activeLanguage}
+        activeFileName={activeFile.name}
         onRun={handleRun}
+        onSave={handleSave}
+        onDownload={handleDownload}
+        onShare={handleShare}
+        onNewFile={() => setNewFileOpen(true)}
         onLanguageChange={handleLanguageChange}
         isRunning={isRunning}
       />
 
-      {/* Main content */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar */}
         <Sidebar
-          activeLanguage={activeLanguageId}
-          onSelectLanguage={handleLanguageChange}
+          files={files}
+          activeFileId={activeFileId}
+          onSelectFile={setActiveFileId}
+          onNewFile={() => setNewFileOpen(true)}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
 
-        {/* Editor + Output */}
-        <div className="flex flex-1 flex-col overflow-hidden">
-          {/* Editor area */}
-          <div className="flex-1 overflow-hidden">
-            <CodeEditor
-              language={activeLanguage.monacoId}
-              value={currentCode}
-              onChange={handleCodeChange}
-            />
-          </div>
+        <PanelGroup direction="vertical" className="flex-1">
+          <Panel defaultSize={65} minSize={30}>
+            <div className="flex h-full flex-col">
+              <FileTabs
+                files={files}
+                activeFileId={activeFileId}
+                onSelectFile={setActiveFileId}
+                onCloseFile={handleCloseFile}
+              />
+              <div className="flex-1 overflow-hidden">
+                <CodeEditor
+                  language={activeLanguage.monacoId}
+                  value={activeFile.content}
+                  onChange={updateFileContent}
+                  fontSize={fontSize}
+                />
+              </div>
+            </div>
+          </Panel>
 
-          {/* Output / Preview */}
-          <div className="h-56 shrink-0">
+          <PanelResizeHandle className="h-1.5 bg-border/50 hover:bg-primary/30 transition-colors cursor-row-resize flex items-center justify-center">
+            <div className="h-0.5 w-8 rounded-full bg-muted-foreground/30" />
+          </PanelResizeHandle>
+
+          <Panel defaultSize={35} minSize={15}>
             {showHtmlPreview ? (
-              <HtmlPreview code={currentCode} />
+              <PanelGroup direction="horizontal">
+                <Panel defaultSize={50} minSize={20}>
+                  <TerminalPanel
+                    output={output}
+                    onClear={handleClearOutput}
+                    onCommand={handleTerminalCommand}
+                    isRunning={isRunning}
+                    activeTab={bottomTab}
+                    onTabChange={setBottomTab}
+                  />
+                </Panel>
+                <PanelResizeHandle className="w-1.5 bg-border/50 hover:bg-primary/30 transition-colors cursor-col-resize flex items-center justify-center">
+                  <div className="w-0.5 h-8 rounded-full bg-muted-foreground/30" />
+                </PanelResizeHandle>
+                <Panel defaultSize={50} minSize={20}>
+                  <HtmlPreview code={activeFile.content} />
+                </Panel>
+              </PanelGroup>
             ) : (
-              <OutputPanel
+              <TerminalPanel
                 output={output}
                 onClear={handleClearOutput}
+                onCommand={handleTerminalCommand}
                 isRunning={isRunning}
+                activeTab={bottomTab}
+                onTabChange={setBottomTab}
               />
             )}
-          </div>
-        </div>
+          </Panel>
+        </PanelGroup>
       </div>
+
+      <SettingsModal
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        fontSize={fontSize}
+        onFontSizeChange={setFontSize}
+        tabSize={tabSize}
+        onTabSizeChange={setTabSize}
+        wordWrap={wordWrap}
+        onWordWrapChange={setWordWrap}
+      />
+
+      <NewFileModal
+        isOpen={newFileOpen}
+        onClose={() => setNewFileOpen(false)}
+        onCreateFile={handleNewFile}
+      />
     </div>
   );
 };

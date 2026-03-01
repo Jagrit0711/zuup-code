@@ -20,10 +20,10 @@ const HtmlPreview = ({ code }: HtmlPreviewProps) => {
   }, [code]);
 
   return (
-    <div className="flex h-full flex-col border-t border-border glass">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-        <Eye size={14} className="text-primary" />
-        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+    <div className="flex h-full flex-col glass">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
+        <Eye size={12} className="text-primary" />
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           Preview
         </span>
       </div>
