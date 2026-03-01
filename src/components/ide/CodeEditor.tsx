@@ -1,15 +1,44 @@
 import Editor, { OnMount } from "@monaco-editor/react";
-import { useRef } from "react";
+import { useRef, useEffect, useCallback } from "react";
 
 interface CodeEditorProps {
   language: string;
   value: string;
   onChange: (value: string) => void;
   fontSize?: number;
+  onFontSizeChange?: (size: number) => void;
 }
 
-const CodeEditor = ({ language, value, onChange, fontSize = 14 }: CodeEditorProps) => {
+const CodeEditor = ({ language, value, onChange, fontSize = 14, onFontSizeChange }: CodeEditorProps) => {
   const editorRef = useRef<any>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Ctrl + mouse wheel zoom
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -1 : 1;
+        const newSize = Math.min(32, Math.max(10, fontSize + delta));
+        if (newSize !== fontSize && onFontSizeChange) {
+          onFontSizeChange(newSize);
+        }
+      }
+    };
+
+    container.addEventListener("wheel", handleWheel, { passive: false });
+    return () => container.removeEventListener("wheel", handleWheel);
+  }, [fontSize, onFontSizeChange]);
+
+  // Update editor font size when it changes
+  useEffect(() => {
+    if (editorRef.current) {
+      editorRef.current.updateOptions({ fontSize });
+    }
+  }, [fontSize]);
 
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
@@ -61,7 +90,7 @@ const CodeEditor = ({ language, value, onChange, fontSize = 14 }: CodeEditorProp
   };
 
   return (
-    <div className="h-full w-full overflow-hidden">
+    <div ref={containerRef} className="h-full w-full overflow-hidden">
       <Editor
         height="100%"
         language={language}

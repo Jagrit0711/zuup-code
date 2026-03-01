@@ -20,9 +20,20 @@ import { useAuth } from "@/contexts/AuthContext";
 import { createProject, updateProject, getProject, type SavedProject } from "@/lib/projectStorage";
 import { toast } from "sonner";
 
+// Keyboard shortcuts data
+const SHORTCUTS = [
+  { keys: "Ctrl+S", desc: "Save" },
+  { keys: "Ctrl+Enter", desc: "Run code" },
+  { keys: "Ctrl+N", desc: "New file" },
+  { keys: "Ctrl+Shift+N", desc: "New project" },
+  { keys: "Ctrl+Shift+S", desc: "Download file" },
+  { keys: "Ctrl+/", desc: "Show shortcuts" },
+  { keys: "Ctrl+Wheel", desc: "Zoom in/out" },
+];
+
 const Index = () => {
   const { user, profile } = useAuth();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // File management
   const defaultFile = createFile("main.py", "python", getLanguageById("python").defaultCode);
@@ -55,6 +66,17 @@ const Index = () => {
     }
   }, [searchParams, user]);
 
+  // Open New Project modal when navigated from Dashboard with ?new=true
+  useEffect(() => {
+    if (searchParams.get("new") === "true") {
+      setNewProjectOpen(true);
+      // Clean the URL param
+      const next = new URLSearchParams(searchParams);
+      next.delete("new");
+      setSearchParams(next, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
+
   // Load shared code on page load
   useEffect(() => {
     const shareId = getShareIdFromUrl();
@@ -85,6 +107,7 @@ const Index = () => {
   const [newFileOpen, setNewFileOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   // Settings
   const [fontSize, setFontSize] = useState(14);
@@ -228,13 +251,14 @@ const Index = () => {
 
   const handleSave = useCallback(() => {
     setFiles((prev) => prev.map((f) => (f.id === activeFileId ? { ...f, isDirty: false } : f)));
-    // If signed in + cloud project, also cloud save
-    if (user && cloudProjectId) {
+    // Smart save: cloud if signed in, otherwise just local
+    if (user) {
       performCloudSave();
     } else {
+      setHasUnsavedChanges(false);
       toast.success(`Saved ${activeFile.name}`);
     }
-  }, [activeFileId, activeFile.name, user, cloudProjectId]);
+  }, [activeFileId, activeFile.name, user]);
 
   const performCloudSave = useCallback(async () => {
     if (!user || isSaving) return;
@@ -270,15 +294,6 @@ const Index = () => {
     }
     setIsSaving(false);
   }, [user, files, activeFile, cloudProjectId, projectName, isSaving]);
-
-  const handleCloudSave = useCallback(async () => {
-    if (!user) {
-      toast.error("Sign in to save to cloud");
-      return;
-    }
-    await performCloudSave();
-    if (!isSaving) toast.success("Saved to cloud ☁️");
-  }, [user, performCloudSave, isSaving]);
 
   // Upload files into current project
   const handleUploadFiles = useCallback((uploadedFiles: { name: string; content: string }[]) => {
@@ -339,6 +354,34 @@ const Index = () => {
     }
   }, [handleRun]);
 
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (ctrl && e.key === "s" && !e.shiftKey) {
+        e.preventDefault();
+        handleSave();
+      } else if (ctrl && e.key === "s" && e.shiftKey) {
+        e.preventDefault();
+        handleDownload();
+      } else if (ctrl && e.key === "Enter") {
+        e.preventDefault();
+        handleRun();
+      } else if (ctrl && e.key === "n" && !e.shiftKey) {
+        e.preventDefault();
+        setNewFileOpen(true);
+      } else if (ctrl && e.key === "N" && e.shiftKey) {
+        e.preventDefault();
+        setNewProjectOpen(true);
+      } else if (ctrl && e.key === "/") {
+        e.preventDefault();
+        setShortcutsOpen(prev => !prev);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [handleSave, handleDownload, handleRun]);
+
   const showHtmlPreview = activeFile.languageId === "html" || activeFile.languageId === "css";
 
   return (
@@ -354,11 +397,13 @@ const Index = () => {
         onNewFile={() => setNewFileOpen(true)}
         onNewProject={() => setNewProjectOpen(true)}
         onLanguageChange={handleLanguageChange}
-        onCloudSave={handleCloudSave}
         isRunning={isRunning}
         user={user}
         profile={profile}
         isSaving={isSaving}
+        hasUnsavedChanges={hasUnsavedChanges}
+        isCloudProject={!!cloudProjectId}
+        onToggleShortcuts={() => setShortcutsOpen(prev => !prev)}
       />
 
       <div className="flex flex-1 overflow-hidden">
@@ -389,6 +434,7 @@ const Index = () => {
                   value={activeFile.content}
                   onChange={updateFileContent}
                   fontSize={fontSize}
+                  onFontSizeChange={setFontSize}
                 />
               </div>
             </div>
@@ -467,6 +513,43 @@ const Index = () => {
           language: f.languageId
         }))}
       />
+
+      {/* Keyboard Shortcuts Overlay */}
+      {shortcutsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShortcutsOpen(false)} />
+          <div className="relative z-10 w-full max-w-sm rounded-xl glass-strong glow-primary shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between border-b border-border px-5 py-3">
+              <h3 className="text-sm font-semibold">Keyboard Shortcuts</h3>
+              <button onClick={() => setShortcutsOpen(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xs">
+                ESC
+              </button>
+            </div>
+            <div className="p-4 space-y-2">
+              {SHORTCUTS.map(s => (
+                <div key={s.keys} className="flex items-center justify-between py-1.5">
+                  <span className="text-xs text-muted-foreground">{s.desc}</span>
+                  <kbd className="rounded bg-secondary/80 px-2 py-0.5 text-[11px] font-mono text-foreground border border-border/50">
+                    {s.keys}
+                  </kbd>
+                </div>
+              ))}
+            </div>
+            <div className="border-t border-border px-5 py-2.5">
+              <p className="text-[10px] text-muted-foreground/60 text-center">
+                Press Ctrl+/ to toggle this panel
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Zoom indicator */}
+      {fontSize !== 14 && (
+        <div className="fixed bottom-4 right-4 z-40 rounded-lg bg-secondary/90 border border-border/50 px-3 py-1.5 text-[11px] text-muted-foreground backdrop-blur-sm">
+          Zoom: {Math.round((fontSize / 14) * 100)}%
+        </div>
+      )}
     </div>
   );
 };
