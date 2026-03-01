@@ -188,9 +188,10 @@ const NewProjectModal = ({ isOpen, onClose, onCreateProject }: NewProjectModalPr
               {source === "blank" && (
                 <div className="rounded-lg bg-secondary/30 border border-border/30 p-4">
                   <p className="text-xs text-muted-foreground">
-                    Creates a project with a single <span className="text-primary font-mono">
-                      main{selectedLang?.extension || ".py"}
-                    </span> file using {selectedLang?.label || "Python"} starter code.
+                    Creates an empty project with no files. You can add files
+                    after creating the project using{" "}
+                    <span className="text-primary font-mono">Ctrl+N</span> or the{" "}
+                    <span className="text-primary">+</span> button in the sidebar.
                   </p>
                 </div>
               )}

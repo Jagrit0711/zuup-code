@@ -19,6 +19,7 @@ import { loadSharedCode, loadSharedProject, clearUrlParams } from "@/lib/sharing
 import { useAuth } from "@/contexts/AuthContext";
 import { createProject, updateProject, getProject, type SavedProject } from "@/lib/projectStorage";
 import { toast } from "sonner";
+import { FilePlus, Plus } from "lucide-react";
 
 // Keyboard shortcuts data
 const SHORTCUTS = [
@@ -36,9 +37,8 @@ const Index = () => {
   const [searchParams, setSearchParams] = useSearchParams();
 
   // File management
-  const defaultFile = createFile("main.py", "python", getLanguageById("python").defaultCode);
-  const [files, setFiles] = useState<FileTab[]>([defaultFile]);
-  const [activeFileId, setActiveFileId] = useState(defaultFile.id);
+  const [files, setFiles] = useState<FileTab[]>([]);
+  const [activeFileId, setActiveFileId] = useState("");
 
   // Cloud project state
   const [cloudProjectId, setCloudProjectId] = useState<string | null>(null);
@@ -134,8 +134,8 @@ const Index = () => {
     }
   }, []);
 
-  const activeFile = files.find((f) => f.id === activeFileId) || files[0];
-  const activeLanguage = getLanguageById(activeFile.languageId);
+  const activeFile = files.find((f) => f.id === activeFileId) || files[0] || null;
+  const activeLanguage = getLanguageById(activeFile?.languageId || "python");
 
   const updateFileContent = useCallback((content: string) => {
     setFiles((prev) =>
@@ -164,8 +164,7 @@ const Index = () => {
   }, [activeFileId]);
 
   const handleNewFile = useCallback((name: string, languageId: string) => {
-    const lang = getLanguageById(languageId);
-    const file = createFile(name, languageId, lang.defaultCode);
+    const file = createFile(name, languageId, "");
     setFiles((prev) => [...prev, file]);
     setActiveFileId(file.id);
   }, []);
@@ -186,10 +185,6 @@ const Index = () => {
         const lang = languages.find(l => l.extension === `.${ext}`)?.id || data.language;
         return createFile(file.name, lang, file.content);
       });
-    } else {
-      // Blank project
-      const lang = getLanguageById(data.language);
-      projectFiles = [createFile(`main${lang.extension}`, data.language, lang.defaultCode)];
     }
 
     const mainFile = data.template
@@ -197,7 +192,7 @@ const Index = () => {
       : projectFiles[0];
 
     setFiles(projectFiles);
-    setActiveFileId(mainFile.id);
+    setActiveFileId(mainFile?.id || "");
     setProjectName(data.name);
 
     // Save to cloud immediately if signed in
@@ -226,9 +221,8 @@ const Index = () => {
     setFiles((prev) => {
       const next = prev.filter((f) => f.id !== id);
       if (next.length === 0) {
-        const def = createFile("main.py", "python", getLanguageById("python").defaultCode);
-        setActiveFileId(def.id);
-        return [def];
+        setActiveFileId("");
+        return [];
       }
       if (activeFileId === id) {
         setActiveFileId(next[next.length - 1].id);
@@ -238,6 +232,7 @@ const Index = () => {
   }, [activeFileId]);
 
   const handleSave = useCallback(() => {
+    if (!activeFile) return;
     setFiles((prev) => prev.map((f) => (f.id === activeFileId ? { ...f, isDirty: false } : f)));
     // Smart save: cloud if signed in, otherwise just local
     if (user) {
@@ -246,7 +241,7 @@ const Index = () => {
       setHasUnsavedChanges(false);
       toast.success(`Saved ${activeFile.name}`);
     }
-  }, [activeFileId, activeFile.name, user]);
+  }, [activeFileId, activeFile?.name, user]);
 
   const performCloudSave = useCallback(async () => {
     if (!user || isSavingRef.current) return;
@@ -305,6 +300,7 @@ const Index = () => {
   }, [activeFile.languageId]);
 
   const handleDownload = useCallback(() => {
+    if (!activeFile) return;
     downloadFile(activeFile.name, activeFile.content);
     toast.success(`Downloaded ${activeFile.name}`);
   }, [activeFile]);
@@ -314,6 +310,7 @@ const Index = () => {
   }, []);
 
   const handleRun = useCallback(async () => {
+    if (!activeFile) return;
     setIsRunning(true);
     setBottomTab("output");
     setOutput([`>>> Running ${activeLanguage.label}...`, ""]);
@@ -378,13 +375,13 @@ const Index = () => {
     return () => window.removeEventListener("keydown", handler);
   }, [handleSave, handleDownload, handleRun]);
 
-  const showHtmlPreview = activeFile.languageId === "html" || activeFile.languageId === "css";
+  const showHtmlPreview = activeFile?.languageId === "html" || activeFile?.languageId === "css";
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-background">
       <TopBar
         activeLanguage={activeLanguage}
-        activeFileName={activeFile.name}
+        activeFileName={activeFile?.name || ""}
         projectName={projectName}
         onRun={handleRun}
         onSave={handleSave}
@@ -417,23 +414,52 @@ const Index = () => {
 
         <PanelGroup direction="vertical" className="flex-1">
           <Panel defaultSize={65} minSize={30}>
-            <div className="flex h-full flex-col">
-              <FileTabs
-                files={files}
-                activeFileId={activeFileId}
-                onSelectFile={setActiveFileId}
-                onCloseFile={handleCloseFile}
-              />
-              <div className="flex-1 overflow-hidden">
-                <CodeEditor
-                  language={activeLanguage.monacoId}
-                  value={activeFile.content}
-                  onChange={updateFileContent}
-                  fontSize={fontSize}
-                  onFontSizeChange={setFontSize}
-                />
+            {files.length === 0 ? (
+              <div className="flex h-full items-center justify-center bg-background">
+                <div className="text-center space-y-5 max-w-xs">
+                  <div className="mx-auto h-20 w-20 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 flex items-center justify-center">
+                    <FilePlus size={32} className="text-primary/80" />
+                  </div>
+                  <div className="space-y-2">
+                    <h2 className="text-base font-semibold text-foreground">No files yet</h2>
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      Create your first file to start coding
+                    </p>
+                  </div>
+                  <div className="space-y-3">
+                    <button
+                      onClick={() => setNewFileOpen(true)}
+                      className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:brightness-110 transition-all"
+                    >
+                      <Plus size={16} />
+                      Create New File
+                    </button>
+                    <p className="text-[10px] text-muted-foreground/50">
+                      or press{" "}
+                      <kbd className="rounded bg-secondary/80 px-1.5 py-0.5 text-[10px] font-mono border border-border/50">Ctrl+N</kbd>
+                    </p>
+                  </div>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="flex h-full flex-col">
+                <FileTabs
+                  files={files}
+                  activeFileId={activeFileId}
+                  onSelectFile={setActiveFileId}
+                  onCloseFile={handleCloseFile}
+                />
+                <div className="flex-1 overflow-hidden">
+                  <CodeEditor
+                    language={activeLanguage.monacoId}
+                    value={activeFile?.content || ""}
+                    onChange={updateFileContent}
+                    fontSize={fontSize}
+                    onFontSizeChange={setFontSize}
+                  />
+                </div>
+              </div>
+            )}
           </Panel>
 
           <PanelResizeHandle className="h-1.5 bg-border/50 hover:bg-primary/30 transition-colors cursor-row-resize flex items-center justify-center">
@@ -500,9 +526,9 @@ const Index = () => {
       <ShareModal
         isOpen={shareModalOpen}
         onClose={() => setShareModalOpen(false)}
-        fileName={activeFile.name}
-        code={activeFile.content}
-        language={activeFile.languageId}
+        fileName={activeFile?.name || ""}
+        code={activeFile?.content || ""}
+        language={activeFile?.languageId || "python"}
         projectName={projectName}
         allFiles={files.map(f => ({
           fileName: f.name,
