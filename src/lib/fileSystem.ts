@@ -44,5 +44,35 @@ export function shareFile(name: string, content: string) {
 }
 
 export function copyToClipboard(text: string): Promise<void> {
-  return navigator.clipboard.writeText(text);
+  // Check if clipboard API is available
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text);
+  }
+  
+  // Fallback for browsers/contexts without clipboard API
+  return new Promise((resolve, reject) => {
+    try {
+      // Create a temporary textarea element
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-999999px';
+      textarea.style.top = '-999999px';
+      document.body.appendChild(textarea);
+      
+      // Select and copy the text
+      textarea.focus();
+      textarea.select();
+      const successful = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      
+      if (successful) {
+        resolve();
+      } else {
+        reject(new Error('Failed to copy text'));
+      }
+    } catch (error) {
+      reject(error);
+    }
+  });
 }

@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import CodeEditor from "@/components/ide/CodeEditor";
 import Sidebar from "@/components/ide/Sidebar";
@@ -8,18 +9,47 @@ import HtmlPreview from "@/components/ide/HtmlPreview";
 import FileTabs from "@/components/ide/FileTabs";
 import SettingsModal from "@/components/ide/SettingsModal";
 import NewFileModal from "@/components/ide/NewFileModal";
+import NewProjectModal from "@/components/ide/NewProjectModal";
 import ShareModal from "@/components/ide/ShareModal";
 import { getLanguageById } from "@/lib/languages";
 import { FileTab, createFile, downloadFile, copyToClipboard } from "@/lib/fileSystem";
 import { executeCode } from "@/lib/pistonApi";
-import { loadSharedCode, loadSharedProject, clearUrlParams } from "@/lib/sharing";
+import { loadSharedCode, loadSharedProject, clearUrlParams, getShareIdFromUrl } from "@/lib/sharing";
+import { ProjectTemplate } from "@/lib/projectTemplates";
+import { useAuth } from "@/contexts/AuthContext";
+import { createProject, updateProject, getProject } from "@/lib/projectStorage";
 import { toast } from "sonner";
 
 const Index = () => {
+  const { user, profile } = useAuth();
+  const [searchParams] = useSearchParams();
+
   // File management
   const defaultFile = createFile("main.py", "python", getLanguageById("python").defaultCode);
   const [files, setFiles] = useState<FileTab[]>([defaultFile]);
   const [activeFileId, setActiveFileId] = useState(defaultFile.id);
+
+  // Cloud project state
+  const [cloudProjectId, setCloudProjectId] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Load cloud project if ?project=<id> is in URL
+  useEffect(() => {
+    const projectId = searchParams.get("project");
+    if (projectId && user) {
+      getProject(projectId).then((project) => {
+        if (project && project.files.length > 0) {
+          const loadedFiles = project.files.map((f) =>
+            createFile(f.name, f.language, f.content)
+          );
+          setFiles(loadedFiles);
+          setActiveFileId(loadedFiles[0].id);
+          setCloudProjectId(project.id);
+          toast.success(`Opened "${project.name}"`);
+        }
+      });
+    }
+  }, [searchParams, user]);
 
   // Load shared code on page load
   useEffect(() => {
@@ -49,6 +79,7 @@ const Index = () => {
   const [bottomTab, setBottomTab] = useState<"output" | "terminal">("output");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newFileOpen, setNewFileOpen] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
 
   // Settings
@@ -123,6 +154,26 @@ const Index = () => {
     setActiveFileId(file.id);
   }, []);
 
+  const handleNewProject = useCallback((template: ProjectTemplate) => {
+    // Convert template files to FileTab objects
+    const projectFiles: FileTab[] = template.files.map(file => {
+      const fileName = file.path === "/" ? file.fileName : `${file.path.replace(/\/$/, "")}/${file.fileName}`;
+      return createFile(fileName, file.language, file.content);
+    });
+    
+    // Find the main file
+    const mainFile = projectFiles.find(f => 
+      f.name.includes(template.mainFile) || f.name === template.mainFile
+    ) || projectFiles[0];
+    
+    setFiles(projectFiles);
+    setActiveFileId(mainFile.id);
+    
+    toast.success(`Created project: ${template.name}`, {
+      description: `${projectFiles.length} files loaded`
+    });
+  }, []);
+
   const handleCloseFile = useCallback((id: string) => {
     setFiles((prev) => {
       const next = prev.filter((f) => f.id !== id);
@@ -142,6 +193,51 @@ const Index = () => {
     setFiles((prev) => prev.map((f) => (f.id === activeFileId ? { ...f, isDirty: false } : f)));
     toast.success(`Saved ${activeFile.name}`);
   }, [activeFileId, activeFile.name]);
+
+  const handleCloudSave = useCallback(async () => {
+    if (!user) {
+      toast.error("Sign in to save to cloud");
+      return;
+    }
+    setIsSaving(true);
+    const projectFiles = files.map((f) => ({
+      name: f.name,
+      language: f.languageId,
+      content: f.content,
+    }));
+    try {
+      if (cloudProjectId) {
+        // Update existing
+        const updated = await updateProject(cloudProjectId, {
+          files: projectFiles,
+          language: activeFile.languageId,
+        });
+        if (updated) {
+          toast.success("Project saved to cloud ☁️");
+        } else {
+          toast.error("Failed to save");
+        }
+      } else {
+        // Create new
+        const name = files.length === 1 ? activeFile.name : `Project-${Date.now().toString(36)}`;
+        const created = await createProject(
+          name,
+          "",
+          activeFile.languageId,
+          projectFiles
+        );
+        if (created) {
+          setCloudProjectId(created.id);
+          toast.success("Project saved to cloud ☁️");
+        } else {
+          toast.error("Failed to save");
+        }
+      }
+    } catch {
+      toast.error("Error saving to cloud");
+    }
+    setIsSaving(false);
+  }, [user, files, activeFile, cloudProjectId]);
 
   const handleDownload = useCallback(() => {
     downloadFile(activeFile.name, activeFile.content);
@@ -201,8 +297,13 @@ const Index = () => {
         onDownload={handleDownload}
         onShare={handleShare}
         onNewFile={() => setNewFileOpen(true)}
+        onNewProject={() => setNewProjectOpen(true)}
         onLanguageChange={handleLanguageChange}
+        onCloudSave={handleCloudSave}
         isRunning={isRunning}
+        user={user}
+        profile={profile}
+        isSaving={isSaving}
       />
 
       <div className="flex flex-1 overflow-hidden">
@@ -287,6 +388,12 @@ const Index = () => {
         isOpen={newFileOpen}
         onClose={() => setNewFileOpen(false)}
         onCreateFile={handleNewFile}
+      />
+
+      <NewProjectModal
+        isOpen={newProjectOpen}
+        onClose={() => setNewProjectOpen(false)}
+        onCreateProject={handleNewProject}
       />
 
       <ShareModal

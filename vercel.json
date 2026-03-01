@@ -1,16 +1,8 @@
 {
   "rewrites": [
     {
-      "source": "/",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/s/(.*)",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/p/(.*)",
-      "destination": "/index.html"
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
     },
     {
       "source": "/((?!_next|api|favicon|robots.txt|.*\\.).*)",

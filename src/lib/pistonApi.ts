@@ -1,111 +1,110 @@
-// Alternative free code execution APIs
-const CODE_EXECUTION_APIS = {
-  JUDGE0: "https://judge0-ce.p.rapidapi.com",
-  ONECOMPILER: "https://onecompiler.com/api/code/exec",
-  JDOODLE: "https://api.jdoodle.com/v1/execute"
+// ============================================
+// Zuup Code — Piston Code Execution Engine
+// Proxied through /api/execute to avoid CORS
+// ============================================
+
+// Language → Piston runtime mapping (from emkc.org/api/v2/piston/runtimes)
+const LANG_CONFIG: Record<string, { language: string; version: string }> = {
+  python:     { language: "python",      version: "3.10.0" },
+  javascript: { language: "javascript",  version: "18.15.0" },
+  typescript: { language: "typescript",  version: "5.0.3" },
+  java:       { language: "java",        version: "15.0.2" },
+  c:          { language: "c",           version: "10.2.0" },
+  "c++":      { language: "c++",         version: "10.2.0" },
+  cpp:        { language: "c++",         version: "10.2.0" },
+  go:         { language: "go",          version: "1.16.2" },
+  rust:       { language: "rust",        version: "1.68.2" },
+  php:        { language: "php",         version: "8.2.3" },
+  ruby:       { language: "ruby",        version: "3.0.1" },
+  swift:      { language: "swift",       version: "5.3.3" },
+  csharp:     { language: "csharp",      version: "6.12.0" },
+  kotlin:     { language: "kotlin",      version: "1.8.20" },
+  bash:       { language: "bash",        version: "5.2.0" },
+  lua:        { language: "lua",         version: "5.4.4" },
+  perl:       { language: "perl",        version: "5.36.0" },
+  r:          { language: "rscript",     version: "4.1.1" },
+  scala:      { language: "scala",       version: "3.2.2" },
+  haskell:    { language: "haskell",     version: "9.0.1" },
+  clojure:    { language: "clojure",     version: "1.10.3" },
+  dart:       { language: "dart",        version: "2.19.6" },
+  elixir:     { language: "elixir",      version: "1.11.3" },
+  nim:        { language: "nim",         version: "1.6.2" },
 };
 
-interface PistonResult {
-  stdout: string;
-  stderr: string;
-  code: number;
-  signal: string | null;
-}
-
-interface PistonResponse {
-  run: PistonResult;
-  compile?: PistonResult;
-}
-
-// Language mappings for different APIs
-const LANGUAGE_MAPPINGS: { [key: string]: { judge0?: number; onecompiler?: string; jdoodle?: string } } = {
-  "python": { judge0: 71, onecompiler: "python", jdoodle: "python3" },
-  "javascript": { judge0: 63, onecompiler: "nodejs", jdoodle: "nodejs" },
-  "java": { judge0: 62, onecompiler: "java", jdoodle: "java" },
-  "c": { judge0: 50, onecompiler: "c", jdoodle: "c" },
-  "c++": { judge0: 54, onecompiler: "cpp", jdoodle: "cpp" },
-  "go": { judge0: 60, onecompiler: "go", jdoodle: "go" },
-  "rust": { judge0: 73, onecompiler: "rust", jdoodle: "rust" },
-  "typescript": { onecompiler: "typescript" }
-};
-
-// Simulate code execution locally for basic languages
-function simulateExecution(language: string, code: string): { output: string[]; success: boolean } {
-  const lines: string[] = [];
-  
-  try {
-    if (language === "python") {
-      // Simple Python simulation
-      lines.push("[SIMULATED] Code analysis:");
-      if (code.includes("print(")) {
-        const printMatches = code.match(/print\(([^)]+)\)/g);
-        printMatches?.forEach(match => {
-          const content = match.replace(/print\(|\)/g, '').replace(/['"]/g, '');
-          lines.push(content);
-        });
-      }
-      lines.push("");
-      lines.push("[INFO] This is a simulated execution.");
-      lines.push("[INFO] For actual execution, set up a local runtime or get Piston API access.");
-      return { output: lines, success: true };
-    }
-    
-    if (language === "javascript") {
-      // Simple JavaScript simulation
-      lines.push("[SIMULATED] Code analysis:");
-      if (code.includes("console.log(")) {
-        const logMatches = code.match(/console\.log\(([^)]+)\)/g);
-        logMatches?.forEach(match => {
-          const content = match.replace(/console\.log\(|\)/g, '').replace(/['"]/g, '');
-          lines.push(content);
-        });
-      }
-      lines.push("");
-      lines.push("[INFO] This is a simulated execution.");
-      lines.push("[INFO] For actual execution, set up a local runtime or get API access.");
-      return { output: lines, success: true };
-    }
-    
-    // For other languages
-    lines.push("[SIMULATED] Code validated and ready for execution.");
-    lines.push(`[INFO] Language: ${language.charAt(0).toUpperCase() + language.slice(1)}`);
-    lines.push(`[INFO] Code length: ${code.length} characters`);
-    lines.push("");
-    lines.push("[NOTICE] Remote execution service is unavailable.");
-    lines.push("[NOTICE] The Piston API now requires authorization (as of Feb 2026).");
-    lines.push("[SUGGESTION] Set up a local development environment for actual execution.");
-    
-    return { output: lines, success: true };
-    
-  } catch (error) {
-    return {
-      output: [`[ERROR] Simulation failed: ${error}`, "[NOTICE] Please check your code syntax."],
-      success: false
-    };
-  }
-}
-
+// ── Main entry ─────────────────────────────────────────
 export async function executeCode(
   language: string,
-  version: string,
+  _version: string,
   code: string
 ): Promise<{ output: string[]; success: boolean }> {
-  try {
-    // For now, use simulation until a proper alternative is set up
-    return simulateExecution(language, code);
-    
-  } catch (err: any) {
+  const lang = language.toLowerCase();
+  const config = LANG_CONFIG[lang];
+
+  if (!config) {
     return {
       output: [
-        `[ERROR] ${err.message}`,
+        `❌ Language "${language}" is not supported for execution.`,
         "",
-        "[NOTICE] The Piston API now requires authorization.",
-        "[NOTICE] This IDE is using simulated execution for demonstration.",
-        "[SUGGESTION] For real code execution, consider:",
-        "  • Setting up local development environment",
-        "  • Using online IDEs like Repl.it, CodePen, or JSFiddle",
-        "  • Getting Piston API authorization from EngineerMan Discord"
+        `✅ Supported: ${Object.keys(LANG_CONFIG).join(", ")}`
       ],
+      success: false,
+    };
+  }
+
+  try {
+    // Call our proxy at /api/execute (avoids CORS)
+    // In dev: Vite proxies this to emkc.org with auth header
+    // In prod: Vercel serverless function handles it
+    const response = await fetch("/api/execute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        language: config.language,
+        version: config.version,
+        files: [{ content: code }],
+      }),
+    });
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      console.error(`Piston returned ${response.status}:`, errBody);
+      return {
+        output: [
+          `❌ Execution service returned status ${response.status}.`,
+          errBody ? errBody.slice(0, 300) : "No details available.",
+        ],
+        success: false,
+      };
+    }
+
+    const result = await response.json();
+    const output: string[] = [];
+    let success = true;
+
+    // Compile stage errors
+    if (result.compile?.stderr) {
+      output.push(result.compile.stderr.trim());
+      success = false;
+    }
+    // Run stage
+    if (result.run?.stdout) output.push(result.run.stdout.trim());
+    if (result.run?.stderr) {
+      output.push(result.run.stderr.trim());
+      success = false;
+    }
+    if (result.run?.code !== 0 && result.run?.code !== null) success = false;
+    if (output.length === 0) output.push("✅ Code executed successfully with no output.");
+
+    return { output, success };
+  } catch (err: any) {
+    console.error("Execution error:", err);
+    return {
+      output: [
+        "❌ Failed to reach code execution service.",
+        "",
+        "🔧 Check your internet connection and try again.",
+        err.message ? `Details: ${err.message}` : "",
+      ].filter(Boolean),
       success: false,
     };
   }

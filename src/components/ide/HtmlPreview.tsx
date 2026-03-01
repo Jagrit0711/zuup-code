@@ -12,9 +12,13 @@ const HtmlPreview = ({ code }: HtmlPreviewProps) => {
     if (iframeRef.current) {
       const doc = iframeRef.current.contentDocument;
       if (doc) {
-        doc.open();
-        doc.write(code);
-        doc.close();
+        try {
+          doc.open();
+          doc.write(code || '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body><p>No content to preview</p></body></html>');
+          doc.close();
+        } catch (error) {
+          console.error('Failed to write to iframe:', error);
+        }
       }
     }
   }, [code]);
@@ -32,7 +36,8 @@ const HtmlPreview = ({ code }: HtmlPreviewProps) => {
           ref={iframeRef}
           title="HTML Preview"
           className="h-full w-full border-0"
-          sandbox="allow-scripts"
+          sandbox="allow-same-origin allow-scripts allow-forms"
+          srcDoc={code || '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body><p>No content to preview</p></body></html>'}
         />
       </div>
     </div>

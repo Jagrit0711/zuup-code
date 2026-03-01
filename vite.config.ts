@@ -11,6 +11,16 @@ export default defineConfig(({ mode }) => ({
     hmr: {
       overlay: false,
     },
+    proxy: {
+      '/api/execute': {
+        target: 'https://emkc.org/api/v2/piston/execute',
+        changeOrigin: true,
+        rewrite: () => '',
+        headers: {
+          'Authorization': 'ef4b83cc-396f-423c-80f7-4c12bec1fd2b',
+        },
+      },
+    },
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {
