@@ -290,14 +290,14 @@ const Index = () => {
   const handleUploadFiles = useCallback((uploadedFiles: { name: string; content: string }[]) => {
     const newFiles = uploadedFiles.map(f => {
       const ext = f.name.split(".").pop()?.toLowerCase() || "";
-      const lang = languages.find(l => l.extension === `.${ext}`)?.id || activeFile.languageId;
+      const lang = languages.find(l => l.extension === `.${ext}`)?.id || activeFile?.languageId || "python";
       return createFile(f.name, lang, f.content);
     });
     setFiles(prev => [...prev, ...newFiles]);
     if (newFiles.length > 0) setActiveFileId(newFiles[0].id);
     setHasUnsavedChanges(true);
     toast.success(`Added ${newFiles.length} file${newFiles.length > 1 ? "s" : ""}`);
-  }, [activeFile.languageId]);
+  }, [activeFile?.languageId]);
 
   const handleDownload = useCallback(() => {
     if (!activeFile) return;
@@ -483,7 +483,7 @@ const Index = () => {
                   <div className="w-0.5 h-8 rounded-full bg-muted-foreground/30" />
                 </PanelResizeHandle>
                 <Panel defaultSize={50} minSize={20}>
-                  <HtmlPreview code={activeFile.content} />
+                  <HtmlPreview code={activeFile?.content || ""} />
                 </Panel>
               </PanelGroup>
             ) : (
