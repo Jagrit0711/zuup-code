@@ -58,10 +58,16 @@ const Index = () => {
 
   // Check for shared code or project in URL on component mount
   useEffect(() => {
+    console.log('Debug: useEffect triggered, checking for shared content...');
+    
     // Check for single file share
     const shareId = getShareIdFromUrl();
+    console.log('Debug: Share ID from URL:', shareId);
+    
     if (shareId) {
       const sharedCode = loadSharedCode(shareId);
+      console.log('Debug: Loaded shared code:', sharedCode);
+      
       if (sharedCode) {
         const sharedFile = createFile(
           sharedCode.fileName,
@@ -73,6 +79,8 @@ const Index = () => {
         clearUrlParams();
         toast.success(`Loaded shared code: ${sharedCode.fileName}`);
         return;
+      } else {
+        console.log('Debug: No shared code found for ID:', shareId);
       }
     }
 

@@ -156,14 +156,23 @@ export function generateProjectUrl(projectId: string): string {
 
 export function getShareIdFromUrl(): string | null {
   const path = window.location.pathname;
+  console.log('Debug: Current pathname:', path);
+  
   // Handle /shareId format
   const match = path.match(/^\/([a-zA-Z0-9]+)$/);
   if (match) {
+    console.log('Debug: Found share ID:', match[1]);
     return match[1];
   }
+  
   // Fallback to query parameter for backwards compatibility
   const params = new URLSearchParams(window.location.search);
-  return params.get('shared');
+  const queryShareId = params.get('shared');
+  if (queryShareId) {
+    console.log('Debug: Found query share ID:', queryShareId);
+  }
+  
+  return queryShareId;
 }
 
 export function getProjectIdFromUrl(): string | null {

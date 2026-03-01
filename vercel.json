@@ -1,7 +1,19 @@
 {
   "rewrites": [
     {
-      "source": "/((?!api/).*)",
+      "source": "/",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/project/(.*)",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/([a-zA-Z0-9]+)",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/((?!_next|api|favicon.ico|robots.txt).*)",
       "destination": "/index.html"
     }
   ],
