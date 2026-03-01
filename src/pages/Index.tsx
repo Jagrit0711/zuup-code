@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import CodeEditor from "@/components/ide/CodeEditor";
 import Sidebar from "@/components/ide/Sidebar";
@@ -8,9 +8,11 @@ import HtmlPreview from "@/components/ide/HtmlPreview";
 import FileTabs from "@/components/ide/FileTabs";
 import SettingsModal from "@/components/ide/SettingsModal";
 import NewFileModal from "@/components/ide/NewFileModal";
+import ShareModal from "@/components/ide/ShareModal";
 import { getLanguageById } from "@/lib/languages";
-import { FileTab, createFile, downloadFile, shareFile, copyToClipboard } from "@/lib/fileSystem";
+import { FileTab, createFile, downloadFile, copyToClipboard } from "@/lib/fileSystem";
 import { executeCode } from "@/lib/pistonApi";
+import { loadSharedCode, loadSharedProject, getShareIdFromUrl, getProjectIdFromUrl, clearUrlParams } from "@/lib/sharing";
 import { toast } from "sonner";
 
 const Index = () => {
@@ -19,17 +21,86 @@ const Index = () => {
   const [files, setFiles] = useState<FileTab[]>([defaultFile]);
   const [activeFileId, setActiveFileId] = useState(defaultFile.id);
 
+  // Load shared code on page load
+  useEffect(() => {
+    const shareId = getShareIdFromUrl();
+    if (shareId) {
+      const sharedCode = loadSharedCode(shareId);
+      if (sharedCode) {
+        const sharedFile = createFile(
+          sharedCode.fileName,
+          sharedCode.language,
+          sharedCode.code
+        );
+        setFiles([sharedFile]);
+        setActiveFileId(sharedFile.id);
+        clearUrlParams();
+        toast.success(`Loaded shared code: ${sharedCode.fileName}`);
+      } else {
+        toast.error("Shared code not found or expired");
+        clearUrlParams();
+      }
+    }
+  }, []);
+
   // UI state
   const [output, setOutput] = useState<string[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [bottomTab, setBottomTab] = useState<"output" | "terminal">("output");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newFileOpen, setNewFileOpen] = useState(false);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
 
   // Settings
   const [fontSize, setFontSize] = useState(14);
   const [tabSize, setTabSize] = useState(2);
   const [wordWrap, setWordWrap] = useState(false);
+
+  // Check for shared code or project in URL on component mount
+  useEffect(() => {
+    // Check for single file share
+    const shareId = getShareIdFromUrl();
+    if (shareId) {
+      const sharedCode = loadSharedCode(shareId);
+      if (sharedCode) {
+        const sharedFile = createFile(
+          sharedCode.fileName,
+          sharedCode.language,
+          sharedCode.code
+        );
+        setFiles([sharedFile]);
+        setActiveFileId(sharedFile.id);
+        clearUrlParams();
+        toast.success(`Loaded shared code: ${sharedCode.fileName}`);
+        return;
+      }
+    }
+
+    // Check for project share
+    const projectId = getProjectIdFromUrl();
+    if (projectId) {
+      const sharedProject = loadSharedProject(projectId);
+      if (sharedProject) {
+        const projectFiles = sharedProject.files.map(file => 
+          createFile(file.fileName, file.language, file.code)
+        );
+        setFiles(projectFiles);
+        const mainFile = projectFiles.find(f => f.name === sharedProject.files.find(sf => sf.id === sharedProject.mainFileId)?.fileName) || projectFiles[0];
+        setActiveFileId(mainFile.id);
+        clearUrlParams();
+        toast.success(`Loaded shared project: ${sharedProject.name}`, {
+          description: `${projectFiles.length} files loaded`
+        });
+        return;
+      }
+    }
+
+    // If we reach here and there was a shareId or projectId but no data found
+    if (shareId || projectId) {
+      toast.error("Shared content not found or expired");
+      clearUrlParams();
+    }
+  }, []);
 
   const activeFile = files.find((f) => f.id === activeFileId) || files[0];
   const activeLanguage = getLanguageById(activeFile.languageId);
@@ -83,10 +154,9 @@ const Index = () => {
     toast.success(`Downloaded ${activeFile.name}`);
   }, [activeFile]);
 
-  const handleShare = useCallback(async () => {
-    await copyToClipboard(activeFile.content);
-    toast.success("Code copied to clipboard");
-  }, [activeFile]);
+  const handleShare = useCallback(() => {
+    setShareModalOpen(true);
+  }, []);
 
   const handleRun = useCallback(async () => {
     setIsRunning(true);
@@ -223,6 +293,19 @@ const Index = () => {
         isOpen={newFileOpen}
         onClose={() => setNewFileOpen(false)}
         onCreateFile={handleNewFile}
+      />
+
+      <ShareModal
+        isOpen={shareModalOpen}
+        onClose={() => setShareModalOpen(false)}
+        fileName={activeFile.name}
+        code={activeFile.content}
+        language={activeFile.languageId}
+        allFiles={files.map(f => ({
+          fileName: f.name,
+          code: f.content,
+          language: f.languageId
+        }))}
       />
     </div>
   );

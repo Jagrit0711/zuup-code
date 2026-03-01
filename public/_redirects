@@ -1,0 +1,6 @@
+# SPA routing for Netlify/Vercel
+/*    /index.html   200
+
+# Handle share links
+/:id    /index.html   200
+/project/:id    /index.html   200
