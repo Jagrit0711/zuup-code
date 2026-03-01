@@ -15,7 +15,7 @@ import ShareModal from "@/components/ide/ShareModal";
 import { getLanguageById, languages } from "@/lib/languages";
 import { FileTab, createFile, downloadFile, copyToClipboard } from "@/lib/fileSystem";
 import { executeCode } from "@/lib/pistonApi";
-import { loadSharedCode, loadSharedProject, clearUrlParams, getShareIdFromUrl } from "@/lib/sharing";
+import { loadSharedCode, loadSharedProject, clearUrlParams } from "@/lib/sharing";
 import { useAuth } from "@/contexts/AuthContext";
 import { createProject, updateProject, getProject, type SavedProject } from "@/lib/projectStorage";
 import { toast } from "sonner";
@@ -47,6 +47,16 @@ const Index = () => {
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
+  // Refs to avoid stale closures in auto-save timer
+  const filesRef = useRef(files);
+  const cloudProjectIdRef = useRef(cloudProjectId);
+  const projectNameRef = useRef(projectName);
+  const isSavingRef = useRef(isSaving);
+  useEffect(() => { filesRef.current = files; }, [files]);
+  useEffect(() => { cloudProjectIdRef.current = cloudProjectId; }, [cloudProjectId]);
+  useEffect(() => { projectNameRef.current = projectName; }, [projectName]);
+  useEffect(() => { isSavingRef.current = isSaving; }, [isSaving]);
+
   // Load cloud project if ?project=<id> is in URL
   useEffect(() => {
     const projectId = searchParams.get("project");
@@ -76,28 +86,6 @@ const Index = () => {
       setSearchParams(next, { replace: true });
     }
   }, [searchParams, setSearchParams]);
-
-  // Load shared code on page load
-  useEffect(() => {
-    const shareId = getShareIdFromUrl();
-    if (shareId) {
-      const sharedCode = loadSharedCode(shareId);
-      if (sharedCode) {
-        const sharedFile = createFile(
-          sharedCode.fileName,
-          sharedCode.language,
-          sharedCode.code
-        );
-        setFiles([sharedFile]);
-        setActiveFileId(sharedFile.id);
-        clearUrlParams();
-        toast.success(`Loaded shared code: ${sharedCode.fileName}`);
-      } else {
-        toast.error("Shared code not found or expired");
-        clearUrlParams();
-      }
-    }
-  }, []);
 
   // UI state
   const [output, setOutput] = useState<string[]>([]);
@@ -261,26 +249,33 @@ const Index = () => {
   }, [activeFileId, activeFile.name, user]);
 
   const performCloudSave = useCallback(async () => {
-    if (!user || isSaving) return;
+    if (!user || isSavingRef.current) return;
     setIsSaving(true);
-    const projectFiles = files.map((f) => ({
+    // Read latest state from refs to avoid stale closure
+    const currentFiles = filesRef.current;
+    const currentCloudId = cloudProjectIdRef.current;
+    const currentProjectName = projectNameRef.current;
+    const projectFiles = currentFiles.map((f) => ({
       name: f.name,
       language: f.languageId,
       content: f.content,
     }));
+    const primaryLang = currentFiles[0]?.languageId || "python";
     try {
-      if (cloudProjectId) {
-        const updated = await updateProject(cloudProjectId, {
+      if (currentCloudId) {
+        const updated = await updateProject(currentCloudId, {
           files: projectFiles,
-          language: activeFile.languageId,
+          language: primaryLang,
         });
         if (updated) {
           setHasUnsavedChanges(false);
           setFiles(prev => prev.map(f => ({ ...f, isDirty: false })));
+        } else {
+          toast.error("Failed to save — check console");
         }
       } else {
-        const name = projectName || activeFile.name;
-        const created = await createProject(name, "", activeFile.languageId, projectFiles);
+        const name = currentProjectName || currentFiles[0]?.name || "Untitled";
+        const created = await createProject(name, "", primaryLang, projectFiles);
         if (created) {
           setCloudProjectId(created.id);
           setProjectName(created.name);
@@ -289,11 +284,12 @@ const Index = () => {
           toast.success("Project saved to cloud ☁️");
         }
       }
-    } catch {
+    } catch (err) {
+      console.error("Cloud save error:", err);
       toast.error("Error saving to cloud");
     }
     setIsSaving(false);
-  }, [user, files, activeFile, cloudProjectId, projectName, isSaving]);
+  }, [user]);
 
   // Upload files into current project
   const handleUploadFiles = useCallback((uploadedFiles: { name: string; content: string }[]) => {
@@ -507,6 +503,7 @@ const Index = () => {
         fileName={activeFile.name}
         code={activeFile.content}
         language={activeFile.languageId}
+        projectName={projectName}
         allFiles={files.map(f => ({
           fileName: f.name,
           code: f.content,

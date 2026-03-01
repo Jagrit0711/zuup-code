@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
-import { X, Copy, Check, Share2, FolderPlus, File } from "lucide-react";
+import { X, Copy, Check, Share2, FolderPlus, File, Loader2, ExternalLink, Eye } from "lucide-react";
 import { copyToClipboard } from "@/lib/fileSystem";
-import { generateShareUrl, generateProjectUrl } from "@/lib/sharing";
+import { createFileShare, createProjectShare } from "@/lib/shareStorage";
 
 interface ShareModalProps {
   isOpen: boolean;
@@ -9,47 +9,63 @@ interface ShareModalProps {
   fileName: string;
   code: string;
   language: string;
+  projectName?: string | null;
   allFiles?: Array<{fileName: string, code: string, language: string}>;
 }
 
-const ShareModal = ({ isOpen, onClose, fileName, code, language, allFiles }: ShareModalProps) => {
+const ShareModal = ({ isOpen, onClose, fileName, code, language, projectName, allFiles }: ShareModalProps) => {
   const [shareUrl, setShareUrl] = useState("");
-  const [projectUrl, setProjectUrl] = useState("");
   const [copied, setCopied] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const [shareType, setShareType] = useState<"file" | "project">("file");
+  const [error, setError] = useState<string | null>(null);
 
+  // Reset state when modal opens
   useEffect(() => {
-    if (isOpen && code) {
-      generateShareLink();
+    if (isOpen) {
+      setShareUrl("");
+      setCopied(false);
+      setError(null);
+      setIsSharing(false);
     }
-  }, [isOpen, code, fileName, language, shareType, allFiles]);
+  }, [isOpen]);
 
-  const generateShareLink = () => {
+  const handleCreateShare = async () => {
     setIsSharing(true);
-    
+    setError(null);
     try {
       if (shareType === "file") {
-        // Generate single file share with URL encoding
-        const url = generateShareUrl(fileName, code, language);
-        setShareUrl(url);
+        const result = await createFileShare(fileName, code, language);
+        if (result) {
+          setShareUrl(result.url);
+        } else {
+          setError("Failed to create share link. Please try again.");
+        }
       } else {
-        // Generate project share with URL encoding
         if (allFiles && allFiles.length > 0) {
-          const url = generateProjectUrl(`${fileName}-project`, allFiles, fileName);
-          setProjectUrl(url);
+          const shareFiles = allFiles.map(f => ({
+            name: f.fileName,
+            language: f.language,
+            content: f.code,
+          }));
+          const title = projectName || `${fileName} project`;
+          const result = await createProjectShare(title, shareFiles, language);
+          if (result) {
+            setShareUrl(result.url);
+          } else {
+            setError("Failed to create project share. Please try again.");
+          }
         }
       }
-    } catch (error) {
-      console.error('Error generating share URL:', error);
+    } catch (err) {
+      console.error("Share error:", err);
+      setError("Something went wrong. Please try again.");
     }
-    
     setIsSharing(false);
   };
 
   const handleCopyUrl = async () => {
-    const urlToCopy = shareType === "file" ? shareUrl : projectUrl;
-    await copyToClipboard(urlToCopy);
+    await copyToClipboard(shareUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -62,18 +78,20 @@ const ShareModal = ({ isOpen, onClose, fileName, code, language, allFiles }: Sha
 
   if (!isOpen) return null;
 
-  const currentUrl = shareType === "file" ? shareUrl : projectUrl;
   const hasMultipleFiles = allFiles && allFiles.length > 1;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="mx-4 w-full max-w-lg rounded-lg border border-border bg-card p-6 shadow-2xl">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
+      <div className="mx-4 w-full max-w-lg rounded-xl border border-border glass-strong p-6 shadow-2xl">
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
               <Share2 size={16} className="text-primary" />
             </div>
-            <h2 className="text-lg font-semibold text-foreground">Share Your Code</h2>
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">Share Your Code</h2>
+              <p className="text-[11px] text-muted-foreground">Create a shareable link — viewers can see but not edit</p>
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -87,8 +105,8 @@ const ShareModal = ({ isOpen, onClose, fileName, code, language, allFiles }: Sha
         {hasMultipleFiles && (
           <div className="mb-4 flex gap-2 p-1 bg-secondary/50 rounded-lg">
             <button
-              onClick={() => setShareType("file")}
-              className={`flex-1 flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${ 
+              onClick={() => { setShareType("file"); setShareUrl(""); setError(null); }}
+              className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${ 
                 shareType === "file" 
                   ? "bg-primary text-primary-foreground" 
                   : "text-muted-foreground hover:text-foreground"
@@ -98,86 +116,126 @@ const ShareModal = ({ isOpen, onClose, fileName, code, language, allFiles }: Sha
               Current File
             </button>
             <button
-              onClick={() => setShareType("project")}
-              className={`flex-1 flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${ 
+              onClick={() => { setShareType("project"); setShareUrl(""); setError(null); }}
+              className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${ 
                 shareType === "project" 
                   ? "bg-primary text-primary-foreground" 
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
               <FolderPlus size={14} />
-              Entire Project ({allFiles?.length} files)
+              Project ({allFiles?.length} files)
             </button>
           </div>
         )}
 
-        {isSharing ? (
-          <div className="flex items-center justify-center py-8">
-            <div className="flex items-center gap-3">
-              <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-              <span className="text-muted-foreground">
-                {shareType === "file" ? "Generating share link..." : "Creating project share..."}
-              </span>
+        {/* Pre-share info */}
+        {!shareUrl && !isSharing && (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-border/40 bg-secondary/20 p-4">
+              <div className="text-xs text-muted-foreground space-y-2">
+                {shareType === "file" ? (
+                  <>
+                    <p><span className="font-medium text-foreground">File:</span> {fileName}</p>
+                    <p><span className="font-medium text-foreground">Language:</span> {language}</p>
+                    <p><span className="font-medium text-foreground">Size:</span> {(code.length / 1024).toFixed(1)} KB</p>
+                  </>
+                ) : (
+                  <>
+                    <p><span className="font-medium text-foreground">Project:</span> {projectName || `${fileName} project`}</p>
+                    <p><span className="font-medium text-foreground">Files:</span> {allFiles?.length || 0}</p>
+                    <p><span className="font-medium text-foreground">Total size:</span> {((allFiles?.reduce((s, f) => s + f.code.length, 0) || 0) / 1024).toFixed(1)} KB</p>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {error && (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
+                <p className="text-xs text-destructive">{error}</p>
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                onClick={handleCopyCode}
+                className="flex-1 rounded-lg border border-border/60 px-3 py-2.5 text-sm font-medium text-foreground hover:bg-secondary transition-colors"
+              >
+                {copied ? "Copied!" : "Copy Code"}
+              </button>
+              <button
+                onClick={handleCreateShare}
+                className="flex-1 flex items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2.5 text-sm font-medium text-primary-foreground hover:brightness-110 transition-all"
+              >
+                <Share2 size={14} />
+                Create Share Link
+              </button>
             </div>
           </div>
-        ) : (
+        )}
+
+        {/* Loading */}
+        {isSharing && (
+          <div className="flex items-center justify-center py-10">
+            <div className="flex items-center gap-3">
+              <Loader2 size={20} className="animate-spin text-primary" />
+              <span className="text-sm text-muted-foreground">Creating share link...</span>
+            </div>
+          </div>
+        )}
+
+        {/* Share URL generated */}
+        {shareUrl && !isSharing && (
           <div className="space-y-4">
             <div className="rounded-lg border border-green-500/20 bg-green-500/5 p-4">
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex items-center gap-2 mb-1">
                 <Check size={16} className="text-green-500" />
-                <span className="font-medium text-green-500">
-                  {shareType === "file" ? "Code is ready to share!" : "Project is ready to share!"}
-                </span>
+                <span className="font-medium text-sm text-green-400">Share link created!</span>
               </div>
-              <p className="text-sm text-muted-foreground">
-                {shareType === "file" 
-                  ? `Your code "${fileName}" is embedded in the URL and ready to share.`
-                  : `Your project with ${allFiles?.length} files is embedded in the URL and ready to share.`
-                }
+              <p className="text-xs text-muted-foreground flex items-center gap-1">
+                <Eye size={11} />
+                Anyone with this link can view your code (read-only)
               </p>
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground">
-                {shareType === "file" ? "Share URL:" : "Project URL:"}
-              </label>
+              <label className="text-xs font-medium text-foreground">Share URL</label>
               <div className="flex gap-2">
                 <input
                   type="text"
-                  value={currentUrl}
+                  value={shareUrl}
                   readOnly
-                  className="flex-1 rounded border border-border bg-secondary px-3 py-2 text-sm font-mono text-foreground"
+                  className="flex-1 rounded-lg border border-border/60 bg-secondary/30 px-3 py-2 text-sm font-mono text-foreground"
                 />
                 <button
                   onClick={handleCopyUrl}
-                  className="flex items-center gap-1 rounded bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:brightness-110"
+                  className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:brightness-110 transition-all"
                 >
                   {copied ? <Check size={14} /> : <Copy size={14} />}
                   {copied ? "Copied!" : "Copy"}
                 </button>
               </div>
-              <p className="text-xs text-muted-foreground">
-                URL format: <span className="font-mono text-primary">code.zuup.dev/{shareType === "project" ? "p" : "s"}/[encoded-data]</span>
+              <p className="text-[11px] text-muted-foreground">
+                Short link: <span className="font-mono text-primary">{shareUrl.replace(/^https?:\/\//, "")}</span>
               </p>
             </div>
 
-            <div className="flex gap-2 pt-2">
-              <button
-                onClick={handleCopyCode}
-                className="flex-1 rounded border border-border bg-secondary px-3 py-2 text-sm font-medium text-foreground hover:bg-secondary/80"
+            <div className="flex gap-2 pt-1">
+              <a
+                href={shareUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex-1 flex items-center justify-center gap-2 rounded-lg border border-border/60 px-3 py-2.5 text-sm font-medium text-foreground hover:bg-secondary transition-colors"
               >
-                Copy Code
-              </button>
+                <ExternalLink size={14} />
+                Open Link
+              </a>
               <button
                 onClick={onClose}
-                className="flex-1 rounded bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:brightness-110"
+                className="flex-1 rounded-lg bg-primary px-3 py-2.5 text-sm font-medium text-primary-foreground hover:brightness-110 transition-all"
               >
                 Done
               </button>
-            </div>
-
-            <div className="text-xs text-muted-foreground text-center pt-2">
-              Share links work instantly across all browsers - no storage needed!
             </div>
           </div>
         )}

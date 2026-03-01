@@ -10,6 +10,7 @@ import Signup from "./pages/Signup";
 import Dashboard from "./pages/Dashboard";
 import Editor from "./pages/Index";
 import NotFound from "./pages/NotFound";
+import ShareView from "./pages/ShareView";
 
 const queryClient = new QueryClient();
 
@@ -29,6 +30,8 @@ const App = () => (
             {/* Legacy share routes */}
             <Route path="/s/:shareId" element={<Editor />} />
             <Route path="/p/:shareId" element={<Editor />} />
+            {/* Dynamic DB-backed share viewer */}
+            <Route path="/share/:shareId" element={<ShareView />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>
