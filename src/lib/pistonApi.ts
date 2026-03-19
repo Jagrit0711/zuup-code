@@ -35,7 +35,8 @@ const LANG_CONFIG: Record<string, { language: string; version: string }> = {
 export async function executeCode(
   language: string,
   _version: string,
-  code: string
+  code: string,
+  stdin?: string
 ): Promise<{ output: string[]; success: boolean }> {
   const lang = language.toLowerCase();
   const config = LANG_CONFIG[lang];
@@ -62,6 +63,7 @@ export async function executeCode(
         language: config.language,
         version: config.version,
         files: [{ content: code }],
+        ...(stdin !== undefined ? { stdin } : {}),
       }),
     });
 

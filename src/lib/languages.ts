@@ -272,6 +272,42 @@ func main() {
 }
 `,
   },
+  {
+    id: "plaintext",
+    label: "Plain Text",
+    monacoId: "plaintext",
+    extension: ".txt",
+    pistonLang: "",
+    pistonVersion: "",
+    defaultCode: "",
+  },
+  {
+    id: "csv",
+    label: "CSV",
+    monacoId: "plaintext",
+    extension: ".csv",
+    pistonLang: "",
+    pistonVersion: "",
+    defaultCode: "",
+  },
+  {
+    id: "markdown",
+    label: "Markdown",
+    monacoId: "markdown",
+    extension: ".md",
+    pistonLang: "",
+    pistonVersion: "",
+    defaultCode: "",
+  },
+  {
+    id: "json",
+    label: "JSON",
+    monacoId: "json",
+    extension: ".json",
+    pistonLang: "",
+    pistonVersion: "",
+    defaultCode: "{}",
+  },
 ];
 
 export function getLanguageById(id: string): LanguageConfig {

@@ -32,6 +32,92 @@ const SHORTCUTS = [
   { keys: "Ctrl+Wheel", desc: "Zoom in/out" },
 ];
 
+// Dynamic extension → languageId — uses the languages registry so it's always in sync
+function extToLangId(ext: string): string {
+  return languages.find((l) => l.extension === `.${ext}`)?.id ?? "plaintext";
+}
+
+/**
+ * Statically scan source code + runtime output to find files
+ * that the user's program creates, so we can add them to the Explorer.
+ */
+function detectCreatedFiles(
+  code: string,
+  langId: string,
+  output: string[]
+): { name: string; langId: string; content: string }[] {
+  const found: { name: string; langId: string; content: string }[] = [];
+
+  const add = (name: string) => {
+    if (!name || name.includes("/") || name.includes("\\")) return;
+    if (found.find((f) => f.name === name)) return;
+    const ext = name.split(".").pop()?.toLowerCase() || "";
+    // Always empty — the user's code writes the real content
+    found.push({ name, langId: extToLangId(ext), content: "" });
+  };
+
+  // ── Python ─────────────────────────────────────────────────────────────────
+  if (langId === "python") {
+    // Build a map of simple string-variable assignments: x = "value"
+    const varMap: Record<string, string> = {};
+    const varAssign = /^[ \t]*(\w+)\s*=\s*(["'`])((?:(?!\2).)*?)\2/gm;
+    let m: RegExpExecArray | null;
+    while ((m = varAssign.exec(code)) !== null) varMap[m[1]] = m[3];
+
+    // open("filename", ["w","a","x",...]) — direct string
+    const directOpen = /open\s*\(\s*(["'])((?:(?!\1).)+?)\1\s*,\s*["'][waxWAX]/g;
+    while ((m = directOpen.exec(code)) !== null) add(m[2]);
+
+    // open(varName, ["w","a","x",...]) — variable name
+    const varOpen = /open\s*\(\s*(\w+)\s*,\s*["'][waxWAX]/g;
+    while ((m = varOpen.exec(code)) !== null) {
+      const resolved = varMap[m[1]];
+      if (resolved) add(resolved);
+    }
+
+    // csv / pandas: df.to_csv("file.csv")
+    const csvMatch = /\.to_csv\s*\(\s*(["'])((?:(?!\1).)+?)\1/g;
+    while ((m = csvMatch.exec(code)) !== null) add(m[2]);
+
+    // json.dump / json.dumps to file
+    const jsonDump = /json\.dump\s*\(.*?open\s*\(\s*(["'])((?:(?!\1).)+?)\1/g;
+    while ((m = jsonDump.exec(code)) !== null) add(m[2]);
+  }
+
+  // ── JavaScript / TypeScript ────────────────────────────────────────────────
+  if (langId === "javascript" || langId === "typescript") {
+    let m: RegExpExecArray | null;
+    const fsWrite = /writeFile(?:Sync)?\s*\(\s*(["'`])((?:(?!\1).)+?)\1/g;
+    while ((m = fsWrite.exec(code)) !== null) add(m[2]);
+    const fsAppend = /appendFile(?:Sync)?\s*\(\s*(["'`])((?:(?!\1).)+?)\1/g;
+    while ((m = fsAppend.exec(code)) !== null) add(m[2]);
+  }
+
+  // ── R ──────────────────────────────────────────────────────────────────────
+  if (langId === "r") {
+    let m: RegExpExecArray | null;
+    const rWrite = /write(?:\.csv)?\s*\(.*?,\s*["']((?:[^"']+\.\w+))[",]/g;
+    while ((m = rWrite.exec(code)) !== null) add(m[1]);
+  }
+
+  // ── Output-based detection (any language) ─────────────────────────────────
+  // Matches: File 'foo.txt' created/written/saved  etc.
+  const outPatterns = [
+    /[Ff]ile\s+["']([^"']+\.[a-z]{1,5})["']\s+(?:created|written|saved|saved successfully)/,
+    /[Ww]rote?\s+(?:to\s+)?["']([^"']+\.[a-z]{1,5})["']/,
+    /[Ss]aved?\s+(?:to\s+)?["']([^"']+\.[a-z]{1,5})["']/,
+    /[Cc]reated?\s+["']([^"']+\.[a-z]{1,5})["']/,
+  ];
+  for (const line of output) {
+    for (const pat of outPatterns) {
+      const m = line.match(pat);
+      if (m) add(m[1]);
+    }
+  }
+
+  return found;
+}
+
 const Index = () => {
   const { user, profile } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -88,9 +174,9 @@ const Index = () => {
   }, [searchParams, setSearchParams]);
 
   // UI state
-  const [output, setOutput] = useState<string[]>([]);
   const [isRunning, setIsRunning] = useState(false);
-  const [bottomTab, setBottomTab] = useState<"output" | "terminal">("output");
+  // Lines pushed into the terminal after execution
+  const [terminalExternalLines, setTerminalExternalLines] = useState<{ text: string; type: "output" | "error" | "success" | "info" | "prompt" | "stdin-prompt" }[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newFileOpen, setNewFileOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -312,40 +398,145 @@ const Index = () => {
   const handleRun = useCallback(async () => {
     if (!activeFile) return;
     setIsRunning(true);
-    setBottomTab("output");
-    setOutput([`>>> Running ${activeLanguage.label}...`, ""]);
+    setTerminalExternalLines([{ text: `▶ Running ${activeFile.name} (${activeLanguage.label})…`, type: "info" }]);
 
     if (activeFile.languageId === "html" || activeFile.languageId === "css") {
-      setOutput((prev) => [...prev, "[OK] Rendered in preview panel."]);
+      setTerminalExternalLines([{ text: "[OK] Rendered in preview panel.", type: "success" }]);
       setIsRunning(false);
       return;
     }
 
     if (activeLanguage.pistonLang) {
       const result = await executeCode(activeLanguage.pistonLang, activeLanguage.pistonVersion, activeFile.content);
-      setOutput((prev) => [
-        ...prev,
-        ...result.output,
-        "",
-        result.success ? "[OK] Execution completed." : "[ERROR] Execution failed.",
-      ]);
+      const resultLines: { text: string; type: "output" | "error" | "success" | "info" | "prompt" | "stdin-prompt" }[] = [
+        ...result.output.flatMap((line) =>
+          line.split("\n").map((l) => ({
+            text: l,
+            type: (l.startsWith("❌") || l.toLowerCase().includes("error") || l.toLowerCase().includes("traceback")
+              ? "error" : "output") as "output" | "error",
+          }))
+        ),
+        { text: "", type: "output" },
+        { text: result.success ? "✅ Execution completed." : "❌ Execution failed.", type: result.success ? "success" : "error" },
+      ];
+      setTerminalExternalLines(resultLines);
+
+      if (result.success) {
+        const created = detectCreatedFiles(activeFile.content, activeFile.languageId, result.output);
+        if (created.length > 0) {
+          setFiles((prev) => {
+            let updated = [...prev];
+            const added: string[] = [];
+            for (const cf of created) {
+              if (!updated.find((f) => f.name === cf.name)) {
+                updated = [...updated, createFile(cf.name, cf.langId, "")];
+                added.push(cf.name);
+              }
+            }
+            if (added.length > 0) {
+              toast.success(
+                `📄 ${added.length === 1 ? `"${added[0]}"` : `${added.length} files`} added to Explorer`,
+                { description: "Created by your code" }
+              );
+            }
+            return updated;
+          });
+          setHasUnsavedChanges(true);
+        }
+      }
     } else {
-      setOutput((prev) => [...prev, "[WARN] No runtime available for this language.", ""]);
+      setTerminalExternalLines([{ text: "[WARN] No runtime available for this language.", type: "info" }]);
     }
 
     setIsRunning(false);
   }, [activeLanguage, activeFile]);
 
   const handleClearOutput = useCallback(() => {
-    setOutput([]);
+    setTerminalExternalLines([{ text: "Terminal cleared.", type: "info" }]);
   }, []);
 
-  const handleTerminalCommand = useCallback((cmd: string) => {
-    // Commands from terminal can trigger run
+  const handleTerminalCommand = useCallback(async (cmd: string) => {
+    // Helper: run code and push results into terminal lines
+    const runInTerminal = async (code: string, stdin?: string) => {
+      if (!activeFile || !activeLanguage?.pistonLang) {
+        setTerminalExternalLines([{ text: "❌ No active file to run, or language has no runtime.", type: "error" }]);
+        return;
+      }
+      setIsRunning(true);
+      setTerminalExternalLines([
+        { text: `▶ Running ${activeFile.name} (${activeLanguage.label})…`, type: "info" },
+      ]);
+
+      const result = await executeCode(activeLanguage.pistonLang, activeLanguage.pistonVersion, code, stdin);
+      const resultLines: { text: string; type: "output" | "error" | "success" | "info" | "prompt" | "stdin-prompt" }[] = [
+        ...result.output.flatMap((line) =>
+          line.split("\n").map((l) => ({
+            text: l,
+            type: (l.startsWith("❌") || l.toLowerCase().includes("error") || l.toLowerCase().includes("traceback")
+              ? "error"
+              : "output") as "output" | "error",
+          }))
+        ),
+        { text: "", type: "output" },
+        {
+          text: result.success ? "✅ Execution completed." : "❌ Execution failed.",
+          type: result.success ? "success" : "error",
+        },
+      ];
+      setTerminalExternalLines(resultLines);
+
+      // ── Auto-add files created by the program to the Explorer ──
+      if (result.success) {
+        const created = detectCreatedFiles(activeFile.content, activeFile.languageId, result.output);
+        if (created.length > 0) {
+          setFiles((prev) => {
+            let updated = [...prev];
+            const added: string[] = [];
+            for (const cf of created) {
+              if (!updated.find((f) => f.name === cf.name)) {
+                updated = [...updated, createFile(cf.name, cf.langId, cf.content)];
+                added.push(cf.name);
+              }
+            }
+            if (added.length > 0) {
+              toast.success(
+                `📄 ${added.length === 1 ? `"${added[0]}"` : `${added.length} files`} added to Explorer`,
+                { description: "Created by your code" }
+              );
+            }
+            return updated;
+          });
+          setHasUnsavedChanges(true);
+        }
+      }
+
+      setIsRunning(false);
+    };
+
+    // Plain "run" — run the active file, output stays in Terminal tab
     if (cmd === "run") {
-      handleRun();
+      if (!activeFile) return;
+      // HTML/CSS: just show a note
+      if (activeFile.languageId === "html" || activeFile.languageId === "css") {
+        setTerminalExternalLines([{ text: "[OK] Rendered in preview panel.", type: "success" }]);
+        return;
+      }
+      await runInTerminal(activeFile.content);
+      return;
     }
-  }, [handleRun]);
+
+    // "run-with-stdin:<b64stdin>" — execute active file with captured stdin
+    if (cmd.startsWith("run-with-stdin:")) {
+      if (!activeFile || !activeLanguage?.pistonLang) {
+        setTerminalExternalLines([{ text: "❌ No active file to run, or language has no runtime.", type: "error" }]);
+        return;
+      }
+      const b64stdin = cmd.slice("run-with-stdin:".length);
+      let stdin = "";
+      try { stdin = decodeURIComponent(escape(atob(b64stdin))); } catch { stdin = b64stdin; }
+      await runInTerminal(activeFile.content, stdin);
+    }
+  }, [activeFile, activeLanguage]);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -471,12 +662,12 @@ const Index = () => {
               <PanelGroup direction="horizontal">
                 <Panel defaultSize={50} minSize={20}>
                   <TerminalPanel
-                    output={output}
                     onClear={handleClearOutput}
                     onCommand={handleTerminalCommand}
                     isRunning={isRunning}
-                    activeTab={bottomTab}
-                    onTabChange={setBottomTab}
+                    fileContent={activeFile?.content ?? ""}
+                    fileLang={activeFile?.languageId ?? ""}
+                    externalLines={terminalExternalLines}
                   />
                 </Panel>
                 <PanelResizeHandle className="w-1.5 bg-border/50 hover:bg-primary/30 transition-colors cursor-col-resize flex items-center justify-center">
@@ -488,12 +679,12 @@ const Index = () => {
               </PanelGroup>
             ) : (
               <TerminalPanel
-                output={output}
                 onClear={handleClearOutput}
                 onCommand={handleTerminalCommand}
                 isRunning={isRunning}
-                activeTab={bottomTab}
-                onTabChange={setBottomTab}
+                fileContent={activeFile?.content ?? ""}
+                fileLang={activeFile?.languageId ?? ""}
+                externalLines={terminalExternalLines}
               />
             )}
           </Panel>
