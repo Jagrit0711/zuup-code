@@ -1,6 +1,9 @@
-# SPA routing for Netlify/Vercel
-/*    /index.html   200
+# Cloudflare Pages + Vite SPA fallback
+# Keep real static files untouched, only fallback app routes to index.html
 
-# Handle share links
-/:id    /index.html   200
-/project/:id    /index.html   200
+/assets/*      /assets/:splat      200
+/favicon.ico   /favicon.ico         200
+/robots.txt    /robots.txt          200
+/sitemap.xml   /sitemap.xml         200
+
+/*             /index.html          200
