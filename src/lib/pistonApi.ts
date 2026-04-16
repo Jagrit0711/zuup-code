@@ -55,7 +55,7 @@ export async function executeCode(
   try {
     // Call our proxy at /api/execute (avoids CORS)
     // In dev: Vite proxies this to emkc.org with auth header
-    // In prod: Vercel serverless function handles it
+    // In prod: a serverless function handles it
     const response = await fetch("/api/execute", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
