@@ -2,7 +2,9 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import CodeEditor from "@/components/ide/CodeEditor";
-import Sidebar from "@/components/ide/Sidebar";
+import Sidebar, { type SidebarTab } from "@/components/ide/Sidebar";
+import ActivityBar from "@/components/ide/ActivityBar";
+import StatusBar from "@/components/ide/StatusBar";
 import TopBar from "@/components/ide/TopBar";
 import TerminalPanel from "@/components/ide/TerminalPanel";
 import HtmlPreview from "@/components/ide/HtmlPreview";
@@ -12,10 +14,11 @@ import NewFileModal from "@/components/ide/NewFileModal";
 import NewProjectModal from "@/components/ide/NewProjectModal";
 import type { NewProjectData } from "@/components/ide/NewProjectModal";
 import ShareModal from "@/components/ide/ShareModal";
-import { getLanguageById, languages } from "@/lib/languages";
+import { getLanguageById, languages, detectNeedsStdin } from "@/lib/languages";
 import { FileTab, createFile, downloadFile, copyToClipboard } from "@/lib/fileSystem";
 import { executeCode } from "@/lib/pistonApi";
 import { loadSharedCode, loadSharedProject, clearUrlParams } from "@/lib/sharing";
+import { recordSnapshot } from "@/lib/timelineStorage";
 import { useAuth } from "@/contexts/AuthContext";
 import { createProject, updateProject, getProject, type SavedProject } from "@/lib/projectStorage";
 import { toast } from "sonner";
@@ -119,12 +122,27 @@ function detectCreatedFiles(
 }
 
 const Index = () => {
-  const { user, profile } = useAuth();
+  const { user, profile, loading, signInWithZuup } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
+  // Enforce authentication for accessing the code editor
+  useEffect(() => {
+    if (!loading && !user) {
+      const redirectPath = encodeURIComponent(window.location.pathname + window.location.search);
+      window.location.href = `/login?redirect=${redirectPath}`;
+    }
+  }, [user, loading]);
+
   // File management
-  const [files, setFiles] = useState<FileTab[]>([]);
+  const [files, setFiles] = useState<FileTab[]>(() => {
+    const defaultLang = getLanguageById("python");
+    return [createFile("main.py", "python", defaultLang.defaultCode)];
+  });
   const [activeFileId, setActiveFileId] = useState("");
+
+  // Program standard input (stdin) for scanf, cin, input(), etc.
+  const [programStdin, setProgramStdin] = useState("");
+  const [stdinRequestTrigger, setStdinRequestTrigger] = useState(0);
 
   // Cloud project state
   const [cloudProjectId, setCloudProjectId] = useState<string | null>(null);
@@ -183,13 +201,40 @@ const Index = () => {
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
+  // VS Code Layout State
+  const [activeSidebarTab, setActiveSidebarTab] = useState<SidebarTab>("explorer");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [inlineCreateTrigger, setInlineCreateTrigger] = useState(0);
+  const [cursorPosition, setCursorPosition] = useState({ line: 1, col: 1 });
+
   // Settings
   const [fontSize, setFontSize] = useState(14);
   const [tabSize, setTabSize] = useState(2);
   const [wordWrap, setWordWrap] = useState(false);
 
-  // Check for shared code or project in URL on component mount
+  // Check for shared code or project in URL or forked project on component mount
   useEffect(() => {
+    // Check for forked project from ShareView
+    try {
+      const forkRaw = localStorage.getItem("zuup_fork_project");
+      if (forkRaw) {
+        const forkData = JSON.parse(forkRaw);
+        if (forkData && forkData.files && forkData.files.length > 0) {
+          const newFiles = forkData.files.map((f: any) =>
+            createFile(f.fileName, f.language, f.code)
+          );
+          setFiles(newFiles);
+          setActiveFileId(newFiles[0].id);
+          setProjectName(forkData.name || "Forked Project");
+          localStorage.removeItem("zuup_fork_project");
+          toast.success(`Forked project loaded in Zuup Code! 🚀`);
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn("Error loading fork project:", e);
+    }
+
     const sharedCode = loadSharedCode();
     if (sharedCode) {
       const sharedFile = createFile(
@@ -250,10 +295,60 @@ const Index = () => {
   }, [activeFileId]);
 
   const handleNewFile = useCallback((name: string, languageId: string) => {
-    const file = createFile(name, languageId, "");
+    const lang = getLanguageById(languageId);
+    const file = createFile(name, languageId, lang.defaultCode || "");
     setFiles((prev) => [...prev, file]);
     setActiveFileId(file.id);
+    recordSnapshot(file.id, file.name, file.content, "Created");
+    toast.success(`Created ${name}`);
   }, []);
+
+  const handleDeleteFile = useCallback((id: string) => {
+    setFiles((prev) => {
+      if (prev.length <= 1) {
+        toast.error("Cannot delete the only file in project");
+        return prev;
+      }
+      const fileToDelete = prev.find((f) => f.id === id);
+      const next = prev.filter((f) => f.id !== id);
+      if (activeFileId === id) {
+        setActiveFileId(next[next.length - 1].id);
+      }
+      toast.success(`Deleted ${fileToDelete?.name || "file"}`);
+      return next;
+    });
+    setHasUnsavedChanges(true);
+  }, [activeFileId]);
+
+  const handleRenameFile = useCallback((id: string, newName: string) => {
+    const ext = newName.includes(".") ? `.${newName.split(".").pop()?.toLowerCase()}` : "";
+    const lang = languages.find((l) => l.extension === ext);
+    setFiles((prev) =>
+      prev.map((f) => {
+        if (f.id === id) {
+          return {
+            ...f,
+            name: newName,
+            languageId: lang ? lang.id : f.languageId,
+            isDirty: true,
+          };
+        }
+        return f;
+      })
+    );
+    setHasUnsavedChanges(true);
+    toast.success(`Renamed file to ${newName}`);
+  }, []);
+
+  const handleRestoreSnapshot = useCallback(
+    (content: string) => {
+      if (!activeFile) return;
+      updateFileContent(content);
+      recordSnapshot(activeFile.id, activeFile.name, content, "Restored");
+      toast.success(`Restored version of ${activeFile.name}`);
+    },
+    [activeFile, updateFileContent]
+  );
 
   const handleNewProject = useCallback(async (data: NewProjectData) => {
     let projectFiles: FileTab[] = [];
@@ -271,6 +366,13 @@ const Index = () => {
         const lang = languages.find(l => l.extension === `.${ext}`)?.id || data.language;
         return createFile(file.name, lang, file.content);
       });
+    } else {
+      // Blank project for the selected language
+      const selectedLang = getLanguageById(data.language);
+      const defaultFileName = `main${selectedLang.extension}`;
+      projectFiles = [
+        createFile(defaultFileName, selectedLang.id, selectedLang.defaultCode)
+      ];
     }
 
     const mainFile = data.template
@@ -317,18 +419,6 @@ const Index = () => {
     });
   }, [activeFileId]);
 
-  const handleSave = useCallback(() => {
-    if (!activeFile) return;
-    setFiles((prev) => prev.map((f) => (f.id === activeFileId ? { ...f, isDirty: false } : f)));
-    // Smart save: cloud if signed in, otherwise just local
-    if (user) {
-      performCloudSave();
-    } else {
-      setHasUnsavedChanges(false);
-      toast.success(`Saved ${activeFile.name}`);
-    }
-  }, [activeFileId, activeFile?.name, user]);
-
   const performCloudSave = useCallback(async () => {
     if (!user || isSavingRef.current) return;
     setIsSaving(true);
@@ -351,6 +441,7 @@ const Index = () => {
         if (updated) {
           setHasUnsavedChanges(false);
           setFiles(prev => prev.map(f => ({ ...f, isDirty: false })));
+          toast.success("Saved to cloud ☁️");
         } else {
           toast.error("Failed to save — check console");
         }
@@ -371,6 +462,22 @@ const Index = () => {
     }
     setIsSaving(false);
   }, [user]);
+
+  const handleSave = useCallback(() => {
+    if (!user) {
+      toast.error("You must be logged in with your Zuup Account to save code.", {
+        action: {
+          label: "Sign in with Zuup",
+          onClick: () => signInWithZuup(window.location.pathname + window.location.search),
+        },
+      });
+      return;
+    }
+    if (!activeFile) return;
+    setFiles((prev) => prev.map((f) => (f.id === activeFileId ? { ...f, isDirty: false } : f)));
+    recordSnapshot(activeFile.id, activeFile.name, activeFile.content, "Saved");
+    performCloudSave();
+  }, [activeFileId, activeFile?.name, activeFile?.content, user, signInWithZuup, performCloudSave]);
 
   // Upload files into current project
   const handleUploadFiles = useCallback((uploadedFiles: { name: string; content: string }[]) => {
@@ -395,61 +502,109 @@ const Index = () => {
     setShareModalOpen(true);
   }, []);
 
-  const handleRun = useCallback(async () => {
+  const handleRun = useCallback(async (customStdin?: unknown) => {
     if (!activeFile) return;
-    setIsRunning(true);
-    setTerminalExternalLines([{ text: `▶ Running ${activeFile.name} (${activeLanguage.label})…`, type: "info" }]);
 
     if (activeFile.languageId === "html" || activeFile.languageId === "css") {
       setTerminalExternalLines([{ text: "[OK] Rendered in preview panel.", type: "success" }]);
-      setIsRunning(false);
       return;
     }
 
-    if (activeLanguage.pistonLang) {
-      const result = await executeCode(activeLanguage.pistonLang, activeLanguage.pistonVersion, activeFile.content);
-      const resultLines: { text: string; type: "output" | "error" | "success" | "info" | "prompt" | "stdin-prompt" }[] = [
-        ...result.output.flatMap((line) =>
-          line.split("\n").map((l) => ({
-            text: l,
-            type: (l.startsWith("❌") || l.toLowerCase().includes("error") || l.toLowerCase().includes("traceback")
-              ? "error" : "output") as "output" | "error",
-          }))
-        ),
-        { text: "", type: "output" },
-        { text: result.success ? "✅ Execution completed." : "❌ Execution failed.", type: result.success ? "success" : "error" },
-      ];
-      setTerminalExternalLines(resultLines);
+    // Safely check if customStdin is an actual string (prevents React MouseEvent crash!)
+    const stdinArg: string | undefined = typeof customStdin === "string" ? customStdin : undefined;
 
-      if (result.success) {
-        const created = detectCreatedFiles(activeFile.content, activeFile.languageId, result.output);
-        if (created.length > 0) {
-          setFiles((prev) => {
-            let updated = [...prev];
-            const added: string[] = [];
-            for (const cf of created) {
-              if (!updated.find((f) => f.name === cf.name)) {
-                updated = [...updated, createFile(cf.name, cf.langId, "")];
-                added.push(cf.name);
-              }
-            }
-            if (added.length > 0) {
-              toast.success(
-                `📄 ${added.length === 1 ? `"${added[0]}"` : `${added.length} files`} added to Explorer`,
-                { description: "Created by your code" }
-              );
-            }
-            return updated;
-          });
-          setHasUnsavedChanges(true);
-        }
-      }
-    } else {
-      setTerminalExternalLines([{ text: "[WARN] No runtime available for this language.", type: "info" }]);
+    const needsStdin = detectNeedsStdin(activeFile.content, activeFile.languageId);
+
+    // If program expects input and none was provided yet, prompt directly in the terminal!
+    if (needsStdin && stdinArg === undefined && !(programStdin || "").trim()) {
+      setTerminalExternalLines([
+        { text: `▶ Running ${activeFile.name} (${activeLanguage.label})…`, type: "info" },
+        { text: "⌨ Program waiting for input (scanf / input()).", type: "info" },
+        { text: "Type your input below and press Enter to execute (or Shift+Enter for multiline):", type: "stdin-prompt" },
+      ]);
+      setStdinRequestTrigger(Date.now());
+      return;
     }
 
-    setIsRunning(false);
-  }, [activeLanguage, activeFile]);
+    setIsRunning(true);
+    const activeStdin = stdinArg !== undefined ? stdinArg : (typeof programStdin === "string" ? programStdin : "");
+    const initialLines: { text: string; type: "output" | "error" | "success" | "info" | "prompt" | "stdin-prompt" }[] = [
+      { text: `▶ Running ${activeFile.name} (${activeLanguage.label})…`, type: "info" }
+    ];
+    if (activeStdin.trim()) {
+      initialLines.push({
+        text: `📥 Input: ${activeStdin.trim().replace(/\n/g, " ")}`,
+        type: "stdin-prompt",
+      });
+    }
+    setTerminalExternalLines(initialLines);
+
+    // Record snapshot on execution
+    recordSnapshot(activeFile.id, activeFile.name, activeFile.content, "Code Run");
+
+    try {
+      if (activeLanguage.pistonLang) {
+        const stdinToPass = activeStdin.trim() ? activeStdin : undefined;
+        const result = await executeCode(activeLanguage.pistonLang, activeLanguage.pistonVersion, activeFile.content, stdinToPass);
+        const resultLines: { text: string; type: "output" | "error" | "success" | "info" | "prompt" | "stdin-prompt" }[] = [
+          ...result.output.flatMap((line) =>
+            line.split("\n").map((l) => ({
+              text: l,
+              type: (l.startsWith("❌") || l.toLowerCase().includes("error") || l.toLowerCase().includes("traceback")
+                ? "error" : "output") as "output" | "error",
+            }))
+          ),
+          { text: "", type: "output" },
+          { text: result.success ? "✅ Execution completed." : "❌ Execution failed.", type: result.success ? "success" : "error" },
+        ];
+
+        // If program failed due to EOF / missing input, prompt in terminal to re-run:
+        if (!stdinToPass && result.output.some(l => l.includes("EOFError") || l.includes("EOF") || l.includes("NoSuchElementException"))) {
+          resultLines.push({
+            text: "💡 Program halted waiting for input. Type input below and press Enter to re-run:",
+            type: "stdin-prompt",
+          });
+          setStdinRequestTrigger(Date.now());
+        }
+
+        setTerminalExternalLines(resultLines);
+
+        if (result.success) {
+          const created = detectCreatedFiles(activeFile.content, activeFile.languageId, result.output);
+          if (created.length > 0) {
+            setFiles((prev) => {
+              let updated = [...prev];
+              const added: string[] = [];
+              for (const cf of created) {
+                if (!updated.find((f) => f.name === cf.name)) {
+                  updated = [...updated, createFile(cf.name, cf.langId, "")];
+                  added.push(cf.name);
+                }
+              }
+              if (added.length > 0) {
+                toast.success(
+                  `📄 ${added.length === 1 ? `"${added[0]}"` : `${added.length} files`} added to Explorer`,
+                  { description: "Created by your code" }
+                );
+              }
+              return updated;
+            });
+            setHasUnsavedChanges(true);
+          }
+        }
+      } else {
+        setTerminalExternalLines([{ text: "[WARN] No runtime available for this language.", type: "info" }]);
+      }
+    } catch (err: any) {
+      console.error("Execution error:", err);
+      setTerminalExternalLines([
+        { text: `❌ Execution error: ${err?.message || "Failed to contact execution server"}`, type: "error" },
+        { text: "Check your internet connection or try again.", type: "info" },
+      ]);
+    } finally {
+      setIsRunning(false);
+    }
+  }, [activeLanguage, activeFile, programStdin]);
 
   const handleClearOutput = useCallback(() => {
     setTerminalExternalLines([{ text: "Terminal cleared.", type: "info" }]);
@@ -534,9 +689,19 @@ const Index = () => {
       const b64stdin = cmd.slice("run-with-stdin:".length);
       let stdin = "";
       try { stdin = decodeURIComponent(escape(atob(b64stdin))); } catch { stdin = b64stdin; }
+      setProgramStdin(stdin);
       await runInTerminal(activeFile.content, stdin);
     }
   }, [activeFile, activeLanguage]);
+
+  const handleActivityTabChange = (tab: SidebarTab) => {
+    if (activeSidebarTab === tab && sidebarOpen) {
+      setSidebarOpen(false);
+    } else {
+      setActiveSidebarTab(tab);
+      setSidebarOpen(true);
+    }
+  };
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -553,7 +718,9 @@ const Index = () => {
         handleRun();
       } else if (ctrl && e.key === "n" && !e.shiftKey) {
         e.preventDefault();
-        setNewFileOpen(true);
+        setInlineCreateTrigger(Date.now());
+        setSidebarOpen(true);
+        setActiveSidebarTab("explorer");
       } else if (ctrl && e.key === "N" && e.shiftKey) {
         e.preventDefault();
         setNewProjectOpen(true);
@@ -574,11 +741,15 @@ const Index = () => {
         activeLanguage={activeLanguage}
         activeFileName={activeFile?.name || ""}
         projectName={projectName}
-        onRun={handleRun}
+        onRun={() => handleRun()}
         onSave={handleSave}
         onDownload={handleDownload}
         onShare={handleShare}
-        onNewFile={() => setNewFileOpen(true)}
+        onNewFile={() => {
+          setInlineCreateTrigger(Date.now());
+          setSidebarOpen(true);
+          setActiveSidebarTab("explorer");
+        }}
         onNewProject={() => setNewProjectOpen(true)}
         onLanguageChange={handleLanguageChange}
         isRunning={isRunning}
@@ -591,17 +762,35 @@ const Index = () => {
       />
 
       <div className="flex flex-1 overflow-hidden">
-        <Sidebar
-          files={files}
-          activeFileId={activeFileId}
-          projectName={projectName}
-          isCloudProject={!!cloudProjectId}
-          hasUnsavedChanges={hasUnsavedChanges}
-          onSelectFile={setActiveFileId}
-          onNewFile={() => setNewFileOpen(true)}
+        {/* VS Code Left Activity Bar */}
+        <ActivityBar
+          activeTab={activeSidebarTab}
+          sidebarOpen={sidebarOpen}
+          onTabChange={handleActivityTabChange}
           onOpenSettings={() => setSettingsOpen(true)}
-          onUploadFiles={handleUploadFiles}
+          user={user}
+          profile={profile}
         />
+
+        {/* VS Code Sidebar (Explorer / Search / Timeline) */}
+        {sidebarOpen && (
+          <Sidebar
+            files={files}
+            activeFileId={activeFileId}
+            projectName={projectName}
+            isCloudProject={!!cloudProjectId}
+            hasUnsavedChanges={hasUnsavedChanges}
+            activeTab={activeSidebarTab}
+            onSelectFile={setActiveFileId}
+            onCreateFile={handleNewFile}
+            onDeleteFile={handleDeleteFile}
+            onRenameFile={handleRenameFile}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onUploadFiles={handleUploadFiles}
+            onRestoreSnapshot={handleRestoreSnapshot}
+            inlineCreateTrigger={inlineCreateTrigger}
+          />
+        )}
 
         <PanelGroup direction="vertical" className="flex-1">
           <Panel defaultSize={65} minSize={30}>
@@ -619,7 +808,11 @@ const Index = () => {
                   </div>
                   <div className="space-y-3">
                     <button
-                      onClick={() => setNewFileOpen(true)}
+                      onClick={() => {
+                        setInlineCreateTrigger(Date.now());
+                        setSidebarOpen(true);
+                        setActiveSidebarTab("explorer");
+                      }}
                       className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:brightness-110 transition-all"
                     >
                       <Plus size={16} />
@@ -647,6 +840,7 @@ const Index = () => {
                     onChange={updateFileContent}
                     fontSize={fontSize}
                     onFontSizeChange={setFontSize}
+                    onCursorChange={setCursorPosition}
                   />
                 </div>
               </div>
@@ -668,6 +862,7 @@ const Index = () => {
                     fileContent={activeFile?.content ?? ""}
                     fileLang={activeFile?.languageId ?? ""}
                     externalLines={terminalExternalLines}
+                    requestStdin={stdinRequestTrigger}
                   />
                 </Panel>
                 <PanelResizeHandle className="w-1.5 bg-border/50 hover:bg-primary/30 transition-colors cursor-col-resize flex items-center justify-center">
@@ -685,11 +880,23 @@ const Index = () => {
                 fileContent={activeFile?.content ?? ""}
                 fileLang={activeFile?.languageId ?? ""}
                 externalLines={terminalExternalLines}
+                requestStdin={stdinRequestTrigger}
               />
             )}
           </Panel>
         </PanelGroup>
       </div>
+
+      {/* VS Code Bottom Status Bar */}
+      <StatusBar
+        cursorPosition={cursorPosition}
+        tabSize={tabSize}
+        languageLabel={activeLanguage.label}
+        isCloudProject={!!cloudProjectId}
+        isSaving={isSaving}
+        hasUnsavedChanges={hasUnsavedChanges}
+        onLanguageClick={() => setSettingsOpen(true)}
+      />
 
       <SettingsModal
         isOpen={settingsOpen}

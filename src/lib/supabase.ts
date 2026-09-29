@@ -1,9 +1,21 @@
 import { createClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL =
-  import.meta.env.VITE_SUPABASE_URL ?? "https://qnapwukqhybziduhzpow.supabase.co";
-const SUPABASE_ANON_KEY =
-  import.meta.env.VITE_SUPABASE_ANON_KEY ??
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFuYXB3dWtxaHliemlkdWh6cG93Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIzNjA3ODYsImV4cCI6MjA4NzkzNjc4Nn0.x1a-lyiPhBDqR2U-ZAC_waSa-2smUs_KpSGXbK54rp0";
+// Zuup Auth Gateway (Cloudflare Worker & Hono proxy)
+// Keeps database credentials secure at the edge while proxying /auth, /rest, and /storage.
+export const ZUUP_AUTH_GATEWAY_URL =
+  import.meta.env.VITE_ZUUP_AUTH_URL ??
+  import.meta.env.VITE_SUPABASE_URL ??
+  "https://auth.zuup.dev";
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+export const ZUUP_GATEWAY_KEY =
+  import.meta.env.VITE_SUPABASE_ANON_KEY ??
+  "zuup_gateway_secret";
+
+export const supabase = createClient(ZUUP_AUTH_GATEWAY_URL, ZUUP_GATEWAY_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+  },
+});
+

@@ -3,6 +3,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useState, useRef, useEffect, KeyboardEvent, useCallback } from "react";
+import { detectNeedsStdin } from "@/lib/languages";
 
 // ─── Virtual Filesystem ────────────────────────────────────────────────────────
 interface VFile {
@@ -32,32 +33,6 @@ async function delay(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// ─── Detect if code needs interactive stdin ────────────────────────────────────
-function detectNeedsStdin(code: string, lang: string): boolean {
-  if (!code) return false;
-  // Strip single-line comments to avoid false positives
-  const stripped = code
-    .replace(/#.*/g, "")           // Python / bash comments
-    .replace(/\/\/.*/g, "")        // JS/TS/Java/C++ line comments
-    .replace(/\/\*[\s\S]*?\*\//g, ""); // block comments
-
-  const patterns: Record<string, RegExp[]> = {
-    python:     [/\binput\s*\(/],
-    javascript: [/readline\s*\(/, /process\.stdin/, /createInterface\s*\(/],
-    typescript: [/readline\s*\(/, /process\.stdin/, /createInterface\s*\(/],
-    c:          [/\bscanf\s*\(/, /\bfgets\s*\(/, /\bgetchar\s*\(/],
-    cpp:        [/\bscanf\s*\(/, /\bcin\s*>>/, /\bgetline\s*\(/, /\bgetchar\s*\(/],
-    java:       [/\bScanner\b/, /\bBufferedReader\b/, /System\.in/],
-    rust:       [/read_line\s*\(/, /std::io::stdin/],
-    ruby:       [/\bgets\b/, /\breadline\b/, /\$stdin/],
-    go:         [/fmt\.Scan/, /bufio\.NewScanner/],
-    r:          [/\breadLines\b/, /\bscan\b/, /\breadline\b/],
-  };
-
-  const langPatterns = patterns[lang] ?? [];
-  return langPatterns.some((p) => p.test(stripped));
-}
-
 interface TerminalProps {
   onClear: () => void;
   onCommand: (cmd: string, stdin?: string) => void;
@@ -67,6 +42,8 @@ interface TerminalProps {
   fileLang?: string;
   // Lets parent push execution results directly into terminal lines
   externalLines?: TermLine[];
+  // Trigger from parent (e.g. Run button) when code requires stdin
+  requestStdin?: number;
 }
 
 const TerminalPanel = ({
@@ -76,6 +53,7 @@ const TerminalPanel = ({
   fileContent = "",
   fileLang = "",
   externalLines,
+  requestStdin,
 }: TerminalProps) => {
   const [input, setInput] = useState("");
   const [history, setHistory] = useState<string[]>([]);
@@ -131,6 +109,17 @@ const TerminalPanel = ({
       setLines((prev) => [...prev, ...externalLines, { text: "", type: "output" }]);
     }
   }, [externalLines]);
+
+  // Handle requestStdin trigger from parent (Run button)
+  useEffect(() => {
+    if (requestStdin) {
+      setStdinMode(true);
+      setStdinBuffer([]);
+      setStdinPromptText("[stdin] >");
+      setPendingCode({ code: "__stdin-run__", lang: "__stdin-run__" });
+      setTimeout(() => inputRef.current?.focus(), 60);
+    }
+  }, [requestStdin]);
 
   const pushLines = useCallback((...newLines: TermLine[]) => {
     setLines((prev) => [...prev, ...newLines]);
@@ -334,35 +323,43 @@ const TerminalPanel = ({
     }
 
     if (cmd === "run") {
-      // Auto-detect if code needs user input before running
+      const rest = trimmed.slice(3).trim();
+      if (rest) {
+        // User typed "run <input>", e.g. "run 42" or "run 10 20"
+        pushLines(
+          { text: `▶ Running active file with input: ${rest}`, type: "info" }
+        );
+        onCommand("run-with-stdin:" + btoa(unescape(encodeURIComponent(rest + "\n"))));
+        return;
+      }
+
+      // Check if active file requires input
       const needsStdin = detectNeedsStdin(fileContent, fileLang);
       if (needsStdin) {
         pushLines(
-          { text: "📥 This program uses interactive input.", type: "info" },
-          { text: "   Type each input value below (one per line), then type 'EOF' to run.", type: "info" },
-          { text: "   (Press Ctrl+C to cancel)", type: "info" },
-          { text: "", type: "output" },
+          { text: "⌨ Program waiting for input (scanf / input()).", type: "info" },
+          { text: "Type input below and press Enter (or Shift+Enter for multiple lines):", type: "stdin-prompt" },
         );
         setStdinMode(true);
         setStdinBuffer([]);
-        setStdinPromptText("input>");
+        setStdinPromptText("[stdin] >");
         setPendingCode({ code: "__stdin-run__", lang: "__stdin-run__" });
-      } else {
-        onCommand("run");
-        pushLines({ text: "▶ Running active file…", type: "info" }, { text: "", type: "output" });
+        return;
       }
+
+      onCommand("run");
+      pushLines({ text: "▶ Running active file…", type: "info" }, { text: "", type: "output" });
       return;
     }
 
-    // run-input — collect stdin lines then run
+    // run-input — enter direct stdin collection in terminal
     if (cmd === "run-input") {
       pushLines(
-        { text: "📥 Stdin collection mode — type each input line, then type 'EOF' to run.", type: "info" },
-        { text: "   (Press Ctrl+C to cancel)", type: "info" },
+        { text: "📥 Enter program input below and press Enter (Shift+Enter for multiple lines, Ctrl+C to cancel):", type: "info" },
       );
       setStdinMode(true);
       setStdinBuffer([]);
-      setStdinPromptText("input>");
+      setStdinPromptText("[stdin] >");
       setPendingCode({ code: "__stdin-run__", lang: "__stdin-run__" });
       return;
     }
@@ -671,15 +668,26 @@ const TerminalPanel = ({
 
   // ─── Key handler ────────────────────────────────────────────────────────────
   const handleKey = async (e: KeyboardEvent<HTMLInputElement>) => {
+    // Multi-line stdin support: Shift+Enter queues line in buffer
+    if (e.key === "Enter" && e.shiftKey && stdinMode) {
+      e.preventDefault();
+      const val = input;
+      setInput("");
+      pushLines({ text: `${stdinPromptText} ${val}`, type: "stdin-prompt" });
+      setStdinBuffer((prev) => [...prev, val]);
+      setStdinPromptText(`[stdin:L${stdinBuffer.length + 2}] >`);
+      return;
+    }
+
     if (e.key === "Enter") {
-      const val = input.trim();
+      const val = input;
       setInput("");
 
       // ── Stdin collection mode ──────────────────────────────────────────────
       if (stdinMode && pendingCode) {
-        if (val === "EOF" || val === "exit") {
-          // Finish write mode
-          if (pendingCode.lang === "__write__") {
+        if (pendingCode.lang === "__write__") {
+          const trimmedVal = val.trim();
+          if (trimmedVal === "EOF" || trimmedVal === "exit") {
             const fileName = pendingCode.code;
             const fullPath = resolvePath(fileName, cwdRef.current);
             const content = stdinBuffer.join("\n") + "\n";
@@ -692,25 +700,41 @@ const TerminalPanel = ({
               { text: `  Tip: 'cat ${fileName}' to view, 'download ${fileName}' to save`, type: "info" },
               { text: "", type: "output" },
             );
-          } else if (pendingCode.lang === "__stdin-run__") {
-            // stdin for running the active editor file
-            const stdin = stdinBuffer.join("\n");
-            pushLines({ text: "▶ Running with provided input…", type: "info" });
-            // Signal parent: run-with-stdin:<b64stdin>
-            onCommand("run-with-stdin:" + btoa(unescape(encodeURIComponent(stdin))));
+            setStdinMode(false);
+            setStdinBuffer([]);
+            setPendingCode(null);
+          } else {
+            pushLines({ text: `> ${val}`, type: "stdin-prompt" });
+            setStdinBuffer((prev) => [...prev, val]);
           }
+          return;
+        }
+
+        if (pendingCode.lang === "__stdin-run__") {
+          const trimmedVal = val.trim();
+          // Echo input line directly in terminal
+          pushLines({ text: `${stdinPromptText} ${val || "(empty input)"}`, type: "stdin-prompt" });
+
+          const allLines = stdinBuffer.length > 0 ? [...stdinBuffer, val] : [val];
+          const finalStdin = allLines.join("\n");
+
+          const stdinToSend =
+            trimmedVal === "none" || trimmedVal === "skip"
+              ? ""
+              : finalStdin + "\n";
+
+          pushLines({ text: "▶ Executing with input…", type: "info" });
+          onCommand("run-with-stdin:" + btoa(unescape(encodeURIComponent(stdinToSend))));
+
           setStdinMode(false);
           setStdinBuffer([]);
           setPendingCode(null);
-        } else {
-          pushLines({ text: `${stdinPromptText} ${val}`, type: "stdin-prompt" });
-          setStdinBuffer((prev) => [...prev, val]);
+          return;
         }
-        return;
       }
 
       // ── Normal command ─────────────────────────────────────────────────────
-      if (val) await processCommand(val);
+      if (val.trim()) await processCommand(val.trim());
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       if (history.length > 0) {
@@ -758,7 +782,7 @@ const TerminalPanel = ({
         setStdinMode(false);
         setStdinBuffer([]);
         setPendingCode(null);
-        pushLines({ text: "^C", type: "error" }, { text: "", type: "output" });
+        pushLines({ text: "^C (input cancelled)", type: "error" }, { text: "", type: "output" });
       }
     }
   };
@@ -781,30 +805,49 @@ const TerminalPanel = ({
 
   return (
     <div className="flex h-full flex-col glass">
-      {/* Header bar */}
-      <div className="flex items-center justify-between border-b border-border px-2">
-        <div className="flex items-center gap-1.5 px-2 py-1.5">
-          <TerminalIcon size={12} className="text-violet-400" />
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-foreground">
+      {/* Header bar - unified single terminal */}
+      <div className="flex items-center justify-between border-b border-border px-3 py-1.5 bg-secondary/30 shrink-0">
+        <div className="flex items-center gap-2">
+          <TerminalIcon size={13} className="text-primary" />
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-foreground">
             Terminal
           </span>
           {isRunning && (
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+            <span className="flex items-center gap-1 text-[10px] text-emerald-400 font-mono">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+              running
+            </span>
           )}
           {isInstalling && (
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
+            <span className="flex items-center gap-1 text-[10px] text-amber-400 font-mono">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
+              installing
+            </span>
+          )}
+          {stdinMode && (
+            <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-mono font-medium animate-pulse">
+              ● awaiting input
+            </span>
           )}
         </div>
-        <button
-          onClick={onClear}
-          className="rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-          title="Clear terminal"
-        >
-          <Trash2 size={12} />
-        </button>
+
+        <div className="flex items-center gap-2">
+          {stdinMode && (
+            <span className="text-[10px] text-muted-foreground/70 hidden sm:inline font-mono">
+              Press Enter to run • Shift+Enter for multiline • Ctrl+C to cancel
+            </span>
+          )}
+          <button
+            onClick={onClear}
+            className="rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            title="Clear terminal"
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
       </div>
 
-      {/* Terminal content — always visible */}
+      {/* Terminal content — unified console stream */}
       <div
         ref={terminalRef}
         className="flex-1 overflow-y-auto p-3 font-mono text-xs"
@@ -816,9 +859,13 @@ const TerminalPanel = ({
           </div>
         ))}
 
-        {/* Input row */}
-        <div className="flex items-center gap-1.5 mt-0.5">
-          <span className={`font-semibold shrink-0 ${stdinMode ? "text-amber-400" : "text-violet-400"}`}>
+        {/* Interactive Prompt Row */}
+        <div className="flex items-center gap-2 mt-1">
+          <span
+            className={`font-semibold shrink-0 select-none ${
+              stdinMode ? "text-amber-400 font-bold" : "text-violet-400"
+            }`}
+          >
             {promptLabel}
           </span>
           <input
@@ -832,9 +879,13 @@ const TerminalPanel = ({
             autoFocus
             disabled={isInstalling || isRunning}
             placeholder={
-              isRunning ? "Running…" :
-              isInstalling ? "Installing…" :
-              stdinMode ? "Enter input (type EOF to finish)" : ""
+              isRunning
+                ? "Running…"
+                : isInstalling
+                ? "Installing…"
+                : stdinMode
+                ? "Type input (e.g. 42) and press Enter"
+                : "Type 'help' or 'run [input]'…"
             }
           />
         </div>

@@ -68,18 +68,17 @@ const Landing = () => {
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <Link
-              to="/signup"
+              to="/editor"
               className="inline-flex items-center gap-2 rounded-lg bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors glow-primary-sm"
             >
               Start Coding
               <ArrowRight size={16} />
             </Link>
             <Link
-              to="/editor"
+              to="/login"
               className="inline-flex items-center gap-2 rounded-lg border border-border/60 bg-secondary/50 px-6 py-3 text-sm font-medium text-foreground hover:bg-secondary transition-colors"
             >
-              <Play size={14} />
-              Try Without Account
+              Sign In with Zuup SSO
             </Link>
           </div>
 
@@ -254,21 +253,21 @@ const Landing = () => {
         <div className="max-w-3xl mx-auto text-center">
           <h2 className="text-3xl sm:text-4xl font-bold mb-4">Ready to Start Coding?</h2>
           <p className="text-muted-foreground mb-8 max-w-lg mx-auto">
-            Create a free account to save your projects in the cloud, or jump straight into the editor — no sign-up needed.
+            Sign in with your unified Zuup Developer Account to access the online IDE, save projects to the cloud, and execute code in 30+ languages.
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <Link
-              to="/signup"
+              to="/login"
               className="inline-flex items-center gap-2 rounded-lg bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors glow-primary-sm"
             >
-              Create Free Account
+              Sign In with Zuup SSO
               <ArrowRight size={16} />
             </Link>
             <Link
               to="/editor"
               className="inline-flex items-center gap-2 rounded-lg border border-border/60 bg-secondary/50 px-6 py-3 text-sm font-medium text-foreground hover:bg-secondary transition-colors"
             >
-              Open Editor
+              Launch Zuup IDE
             </Link>
           </div>
         </div>

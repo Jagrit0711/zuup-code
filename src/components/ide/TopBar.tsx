@@ -216,10 +216,10 @@ const TopBar = ({
             </Link>
           ) : (
             <Link
-              to="/login"
+              to="/login?redirect=/editor"
               className="flex items-center gap-1 rounded-md px-3 py-1 text-[11px] text-primary hover:bg-primary/10 transition-all font-medium"
             >
-              Sign In
+              Sign In with Zuup
             </Link>
           )}
 
@@ -227,7 +227,7 @@ const TopBar = ({
 
           {/* Run button */}
           <button
-            onClick={onRun}
+            onClick={() => onRun()}
             disabled={isRunning}
             className={`flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-[11px] font-semibold transition-all ${
               isRunning

@@ -33,28 +33,16 @@ for i in range(1, 6):
   },
   {
     id: "c",
-    label: "C (Arduino)",
+    label: "C",
     monacoId: "c",
     extension: ".c",
     pistonLang: "c",
     pistonVersion: "10.2.0",
-    defaultCode: `// Welcome to Zuup Code — C / Arduino
+    defaultCode: `// Welcome to Zuup Code — C
 #include <stdio.h>
 
-void setup() {
-    printf("Zuup Code initialized!\\n");
-    printf("LED on pin 13 ready.\\n");
-}
-
-void loop() {
-    printf("Blink!\\n");
-}
-
 int main() {
-    setup();
-    for (int i = 0; i < 3; i++) {
-        loop();
-    }
+    printf("Hello from Zuup Code!\\n");
     return 0;
 }
 `,
@@ -313,3 +301,43 @@ func main() {
 export function getLanguageById(id: string): LanguageConfig {
   return languages.find(l => l.id === id) || languages[0];
 }
+
+/**
+ * Detect language configuration automatically from a filename's extension.
+ */
+export function detectLanguageFromFilename(fileName: string): LanguageConfig {
+  const ext = fileName.includes(".") ? `.${fileName.split(".").pop()?.toLowerCase()}` : "";
+  if (!ext) return getLanguageById("python");
+  const found = languages.find(l => l.extension.toLowerCase() === ext);
+  return found || getLanguageById("plaintext");
+}
+
+/**
+ * Detects if a code string uses standard input functions (scanf, cin >>, input(), Scanner, etc.)
+ */
+export function detectNeedsStdin(code: string, lang: string): boolean {
+  if (!code) return false;
+  // Strip single-line & multi-line comments to avoid false positives
+  const stripped = code
+    .replace(/#.*/g, "")               // Python / bash comments
+    .replace(/\/\/.*/g, "")            // JS/TS/Java/C++ line comments
+    .replace(/\/\*[\s\S]*?\*\//g, ""); // block comments
+
+  const patterns: Record<string, RegExp[]> = {
+    python:     [/\binput\s*\(/],
+    javascript: [/readline\s*\(/, /process\.stdin/, /createInterface\s*\(/],
+    typescript: [/readline\s*\(/, /process\.stdin/, /createInterface\s*\(/],
+    c:          [/\bscanf\s*\(/, /\bfgets\s*\(/, /\bgetchar\s*\(/],
+    cpp:        [/\bscanf\s*\(/, /\bcin\s*>>/, /\bgetline\s*\(/, /\bgetchar\s*\(/],
+    "c++":      [/\bscanf\s*\(/, /\bcin\s*>>/, /\bgetline\s*\(/, /\bgetchar\s*\(/],
+    java:       [/\bScanner\b/, /\bBufferedReader\b/, /System\.in/],
+    rust:       [/read_line\s*\(/, /std::io::stdin/],
+    ruby:       [/\bgets\b/, /\breadline\b/, /\$stdin/],
+    go:         [/fmt\.Scan/, /bufio\.NewScanner/],
+    r:          [/\breadLines\b/, /\bscan\b/, /\breadline\b/],
+  };
+
+  const langPatterns = patterns[lang.toLowerCase()] ?? [];
+  return langPatterns.some((p) => p.test(stripped));
+}
+

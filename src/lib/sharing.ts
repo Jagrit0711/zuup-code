@@ -29,7 +29,7 @@ function encodeData(data: any): string {
 }
 
 // Decode base64 URL-safe string to data
-function decodeData(encoded: string): any {
+export function decodeData(encoded: string): any {
   try {
     // Restore padding and characters
     let base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');

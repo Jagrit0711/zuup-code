@@ -11,6 +11,8 @@ import Dashboard from "./pages/Dashboard";
 import Editor from "./pages/Index";
 import NotFound from "./pages/NotFound";
 import ShareView from "./pages/ShareView";
+import AuthCallback from "./pages/AuthCallback";
+import ProtectedRoute from "./components/auth/ProtectedRoute";
 
 const queryClient = new QueryClient();
 
@@ -25,12 +27,26 @@ const App = () => (
             <Route path="/" element={<Landing />} />
             <Route path="/login" element={<Login />} />
             <Route path="/signup" element={<Signup />} />
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/editor" element={<Editor />} />
-            {/* Legacy share routes */}
-            <Route path="/s/:shareId" element={<Editor />} />
-            <Route path="/p/:shareId" element={<Editor />} />
-            {/* Dynamic DB-backed share viewer */}
+            <Route path="/auth/callback" element={<AuthCallback />} />
+            <Route
+              path="/dashboard"
+              element={
+                <ProtectedRoute>
+                  <Dashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/editor"
+              element={
+                <ProtectedRoute>
+                  <Editor />
+                </ProtectedRoute>
+              }
+            />
+            {/* Branded, read-only code showcase routes */}
+            <Route path="/s/:shareId" element={<ShareView />} />
+            <Route path="/p/:shareId" element={<ShareView />} />
             <Route path="/share/:shareId" element={<ShareView />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />

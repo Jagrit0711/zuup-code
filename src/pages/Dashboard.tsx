@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { getUserProjects, deleteProject, createProject, SavedProject } from "@/lib/projectStorage";
+import { updateProfile } from "@/lib/profile";
 import { supabase } from "@/lib/supabase";
 import { languages } from "@/lib/languages";
 import {
@@ -16,7 +17,7 @@ const LOGO = "https://www.zuup.dev/lovable-uploads/b44b8051-6117-4b37-999d-014c4
 type Tab = "projects" | "files" | "settings";
 
 const Dashboard = () => {
-  const { user, profile, signOut } = useAuth();
+  const { user, profile, signOut, refreshProfile } = useAuth();
   const navigate = useNavigate();
   const [projects, setProjects] = useState<SavedProject[]>([]);
   const [loading, setLoading] = useState(true);
@@ -179,23 +180,18 @@ const Dashboard = () => {
   const handleSaveProfile = async () => {
     if (!user) return;
     setSavingProfile(true);
-    const { error } = await supabase
-      .from("profiles")
-      .update({
-        display_name: profileForm.display_name.trim() || null,
-        username: profileForm.username.trim() || null,
-        avatar_url: profileForm.avatar_url.trim() || null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", user.id);
+    const result = await updateProfile(user.id, {
+      display_name: profileForm.display_name.trim() || null,
+      username: profileForm.username.trim() || null,
+      avatar_url: profileForm.avatar_url.trim() || null,
+    });
 
-    if (error) {
-      toast.error("Failed to update profile: " + error.message);
+    if (!result.success) {
+      toast.error("Failed to update profile: " + (result.error || "Unknown error"));
     } else {
       toast.success("Profile updated!");
       setEditingProfile(false);
-      // Reload page to refresh profile context
-      window.location.reload();
+      await refreshProfile();
     }
     setSavingProfile(false);
   };

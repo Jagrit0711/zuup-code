@@ -1,5 +1,6 @@
 import Editor, { OnMount } from "@monaco-editor/react";
-import { useRef, useEffect, useCallback } from "react";
+import { useRef, useEffect } from "react";
+import { registerMonacoLanguageSnippets } from "@/lib/monacoSnippets";
 
 interface CodeEditorProps {
   language: string;
@@ -7,9 +8,10 @@ interface CodeEditorProps {
   onChange: (value: string) => void;
   fontSize?: number;
   onFontSizeChange?: (size: number) => void;
+  onCursorChange?: (pos: { line: number; col: number }) => void;
 }
 
-const CodeEditor = ({ language, value, onChange, fontSize = 14, onFontSizeChange }: CodeEditorProps) => {
+const CodeEditor = ({ language, value, onChange, fontSize = 14, onFontSizeChange, onCursorChange }: CodeEditorProps) => {
   const editorRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -42,6 +44,19 @@ const CodeEditor = ({ language, value, onChange, fontSize = 14, onFontSizeChange
 
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
+
+    // Track cursor movements for VS Code Status Bar
+    editor.onDidChangeCursorPosition((e: any) => {
+      if (onCursorChange) {
+        onCursorChange({
+          line: e.position.lineNumber,
+          col: e.position.column,
+        });
+      }
+    });
+
+    // Register rich IntelliSense snippets for C, C++, Python, Java, JS, TS, Go, Rust
+    registerMonacoLanguageSnippets(monaco);
 
     monaco.editor.defineTheme("zuup-dark", {
       base: "vs-dark",
@@ -120,11 +135,24 @@ const CodeEditor = ({ language, value, onChange, fontSize = 14, onFontSizeChange
           autoClosingQuotes: "always",
           autoIndent: "full",
           formatOnPaste: true,
+          snippetSuggestions: "top",
           suggestOnTriggerCharacters: true,
-          quickSuggestions: { other: true, comments: false, strings: true },
-          parameterHints: { enabled: true },
+          acceptSuggestionOnEnter: "on",
+          quickSuggestions: { other: true, comments: true, strings: true },
+          parameterHints: { enabled: true, cycle: true },
           wordBasedSuggestions: "allDocuments",
           tabCompletion: "on",
+          suggest: {
+            showKeywords: true,
+            showSnippets: true,
+            showWords: true,
+            showFunctions: true,
+            showClasses: true,
+            showMethods: true,
+            showProperties: true,
+            preview: true,
+            shareSuggestSelections: true,
+          },
           padding: { top: 16, bottom: 16 },
           scrollBeyondLastLine: false,
           renderLineHighlight: "all",

@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { generateShareUrl, generateProjectUrl } from "@/lib/sharing";
 
 export interface ShareFile {
   name: string;
@@ -38,7 +39,7 @@ function getBaseUrl(): string {
 
 /**
  * Create a share for a single file.
- * Returns the share URL or null on failure.
+ * Returns the share URL or falls back to encoded share URL on DB error.
  */
 export async function createFileShare(
   fileName: string,
@@ -47,30 +48,36 @@ export async function createFileShare(
 ): Promise<{ url: string; id: string } | null> {
   const id = generateShareId();
 
-  // Get current user (optional — anon shares are fine)
-  const { data: authData } = await supabase.auth.getUser();
-  const userId = authData.user?.id ?? null;
+  try {
+    // Get current user (optional — anon shares are fine)
+    const { data: authData } = await supabase.auth.getUser();
+    const userId = authData.user?.id ?? null;
 
-  const { error } = await supabase.from("code_shares").insert({
-    id,
-    type: "file",
-    title: fileName,
-    language,
-    files: [{ name: fileName, language, content: code }],
-    created_by: userId,
-  });
+    const { error } = await supabase.from("code_shares").insert({
+      id,
+      type: "file",
+      title: fileName,
+      language,
+      files: [{ name: fileName, language, content: code }],
+      created_by: userId,
+    });
 
-  if (error) {
-    console.error("Error creating file share:", error);
-    return null;
+    if (!error) {
+      return { url: `${getBaseUrl()}/share/${id}`, id };
+    }
+
+    console.warn("Supabase code_shares unavailable, using URL-encoded share fallback:", error.message);
+  } catch (err) {
+    console.warn("Share creation exception, falling back:", err);
   }
 
-  return { url: `${getBaseUrl()}/share/${id}`, id };
+  // Resilient fallback: URL-based encoded share
+  return { url: generateShareUrl(fileName, code, language), id };
 }
 
 /**
  * Create a share for an entire project (multiple files).
- * Returns the share URL or null on failure.
+ * Returns the share URL or falls back to encoded share URL on DB error.
  */
 export async function createProjectShare(
   projectName: string,
@@ -79,24 +86,36 @@ export async function createProjectShare(
 ): Promise<{ url: string; id: string } | null> {
   const id = generateShareId();
 
-  const { data: authData } = await supabase.auth.getUser();
-  const userId = authData.user?.id ?? null;
+  try {
+    const { data: authData } = await supabase.auth.getUser();
+    const userId = authData.user?.id ?? null;
 
-  const { error } = await supabase.from("code_shares").insert({
-    id,
-    type: "project",
-    title: projectName,
-    language: primaryLanguage,
-    files,
-    created_by: userId,
-  });
+    const { error } = await supabase.from("code_shares").insert({
+      id,
+      type: "project",
+      title: projectName,
+      language: primaryLanguage,
+      files,
+      created_by: userId,
+    });
 
-  if (error) {
-    console.error("Error creating project share:", error);
-    return null;
+    if (!error) {
+      return { url: `${getBaseUrl()}/share/${id}`, id };
+    }
+
+    console.warn("Supabase code_shares unavailable, using project URL-encoded share fallback:", error.message);
+  } catch (err) {
+    console.warn("Project share creation exception, falling back:", err);
   }
 
-  return { url: `${getBaseUrl()}/share/${id}`, id };
+  // Resilient fallback: Project URL-encoded share
+  return {
+    url: generateProjectUrl(
+      projectName,
+      files.map((f) => ({ fileName: f.name, code: f.content, language: f.language }))
+    ),
+    id,
+  };
 }
 
 /**

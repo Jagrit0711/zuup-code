@@ -1,177 +1,115 @@
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { ArrowRight, Loader2, Github } from "lucide-react";
+import { Loader2, ShieldCheck, Sparkles, FolderCode, ArrowRight } from "lucide-react";
 
 const LOGO = "https://www.zuup.dev/lovable-uploads/b44b8051-6117-4b37-999d-014c4c33dd13.png";
 
 const Signup = () => {
-  const { signUp, signInWithGitHub, signInWithGoogle } = useAuth();
+  const { user, loading, signInWithZuup } = useAuth();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState(false);
+  const [isRedirecting, setIsRedirecting] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    if (password.length < 6) {
-      setError("Password must be at least 6 characters");
-      return;
+  const redirectTarget = searchParams.get("redirect") || "/editor";
+
+  useEffect(() => {
+    if (!loading && user) {
+      navigate(redirectTarget, { replace: true });
     }
-    setLoading(true);
-    const { error } = await signUp(email, password, name);
-    if (error) {
-      setError(error);
-      setLoading(false);
-    } else {
-      setSuccess(true);
-      setLoading(false);
-    }
+  }, [user, loading, navigate, redirectTarget]);
+
+  const handleZuupSignup = () => {
+    setIsRedirecting(true);
+    signInWithZuup(redirectTarget);
   };
 
-  if (success) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background px-6">
-        <div className="w-full max-w-md text-center">
-          <Link to="/" className="inline-flex items-center gap-2.5 mb-8">
-            <img src={LOGO} alt="Zuup" className="h-9 w-9 rounded" />
-            <span className="text-xl font-bold">Zuup</span>
-            <span className="text-xl font-light text-primary">Code</span>
-          </Link>
-          <div className="rounded-xl border border-border/40 bg-card/50 p-8">
-            <div className="text-4xl mb-4">✉️</div>
-            <h2 className="text-xl font-bold mb-2">Check your email</h2>
-            <p className="text-sm text-muted-foreground mb-6">
-              We sent a confirmation link to <strong className="text-foreground">{email}</strong>.
-              Click it to activate your account.
-            </p>
-            <Link
-              to="/login"
-              className="inline-flex items-center gap-2 text-sm text-primary hover:underline"
-            >
-              Back to Sign In <ArrowRight size={14} />
-            </Link>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background px-6 relative">
-      <div className="absolute top-20 left-1/2 -translate-x-1/2 w-[500px] h-[300px] bg-primary/8 rounded-full blur-[100px] pointer-events-none" />
+    <div className="min-h-screen flex items-center justify-center bg-background px-6 relative overflow-hidden">
+      {/* Background glow ambiance */}
+      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[360px] bg-primary/10 rounded-full blur-[120px] pointer-events-none" />
+      <div className="absolute bottom-10 left-1/4 w-[300px] h-[300px] bg-primary/5 rounded-full blur-[90px] pointer-events-none" />
 
       <div className="w-full max-w-md relative z-10">
-        <div className="flex flex-col items-center mb-8">
-          <Link to="/" className="flex items-center gap-2.5 mb-6">
-            <img src={LOGO} alt="Zuup" className="h-9 w-9 rounded" />
-            <span className="text-xl font-bold">Zuup</span>
-            <span className="text-xl font-light text-primary">Code</span>
-          </Link>
-          <h1 className="text-2xl font-bold">Create your account</h1>
-          <p className="text-sm text-muted-foreground">Start coding for free — save projects to the cloud</p>
-        </div>
-
-        <div className="flex flex-col gap-3 mb-6">
-          <button
-            onClick={signInWithGitHub}
-            className="flex items-center justify-center gap-2 rounded-lg border border-border/40 bg-secondary/30 px-4 py-2.5 text-sm font-medium hover:bg-secondary/60 transition-colors"
-          >
-            <Github size={16} />
-            Continue with GitHub
-          </button>
-          <button
-            onClick={signInWithGoogle}
-            className="flex items-center justify-center gap-2 rounded-lg border border-border/40 bg-secondary/30 px-4 py-2.5 text-sm font-medium hover:bg-secondary/60 transition-colors"
-          >
-            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor">
-              <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
-              <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-              <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-              <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-            </svg>
-            Continue with Google
-          </button>
-        </div>
-
-        <div className="relative mb-6">
-          <div className="absolute inset-0 flex items-center">
-            <div className="w-full border-t border-border/40" />
-          </div>
-          <div className="relative flex justify-center text-xs">
-            <span className="bg-background px-3 text-muted-foreground/60">or</span>
-          </div>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {error && (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">
-              {error}
+        {/* Logo and title */}
+        <div className="flex flex-col items-center mb-8 text-center">
+          <Link to="/" className="flex items-center gap-2.5 mb-6 group">
+            <div className="relative">
+              <img
+                src={LOGO}
+                alt="Zuup"
+                className="h-10 w-10 rounded-xl group-hover:scale-105 transition-transform shadow-lg shadow-primary/20"
+              />
+              <div className="absolute inset-0 bg-primary/20 rounded-xl blur group-hover:blur-md transition-all pointer-events-none" />
             </div>
-          )}
+            <div className="flex items-center text-2xl font-bold tracking-tight">
+              <span>Zuup</span>
+              <span className="font-light text-primary ml-1">Code</span>
+            </div>
+          </Link>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">Create Zuup Account</h1>
+          <p className="text-sm text-muted-foreground mt-1.5 max-w-xs">
+            Start coding with full cloud persistence and real compiler execution.
+          </p>
+        </div>
 
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Name</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-              placeholder="Jagrit"
-              className="w-full rounded-lg border border-border/40 bg-secondary/30 px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40 transition-all"
-            />
+        {/* Signup Card via Zuup SSO */}
+        <div className="rounded-2xl border border-border/50 bg-card/60 backdrop-blur-xl p-7 shadow-2xl space-y-6">
+          <div className="space-y-3">
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-secondary/30 border border-border/40 text-xs text-muted-foreground">
+              <Sparkles size={18} className="text-primary shrink-0" />
+              <span>Free forever — no credit card or setup needed</span>
+            </div>
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-secondary/30 border border-border/40 text-xs text-muted-foreground">
+              <FolderCode size={18} className="text-primary shrink-0" />
+              <span>Multi-file project workspaces with auto-save</span>
+            </div>
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-secondary/30 border border-border/40 text-xs text-muted-foreground">
+              <ShieldCheck size={18} className="text-primary shrink-0" />
+              <span>Unified SSO authentication across all Zuup products</span>
+            </div>
           </div>
 
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              placeholder="you@example.com"
-              className="w-full rounded-lg border border-border/40 bg-secondary/30 px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40 transition-all"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              placeholder="At least 6 characters"
-              className="w-full rounded-lg border border-border/40 bg-secondary/30 px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40 transition-all"
-            />
-          </div>
-
+          {/* Primary Action Button */}
           <button
-            type="submit"
-            disabled={loading}
-            className="w-full flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
+            onClick={handleZuupSignup}
+            disabled={isRedirecting || loading}
+            className="w-full group relative flex items-center justify-center gap-3 rounded-xl border border-primary/50 bg-gradient-to-r from-primary/20 via-primary/30 to-primary/20 px-5 py-3.5 text-sm font-semibold text-foreground hover:border-primary hover:from-primary/30 hover:to-primary/30 transition-all shadow-lg shadow-primary/10 active:scale-[0.99] disabled:opacity-60"
           >
-            {loading ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
-            Create Account
+            {isRedirecting ? (
+              <Loader2 size={18} className="animate-spin text-primary" />
+            ) : (
+              <img
+                src={LOGO}
+                alt="Zuup Auth"
+                className="h-5 w-5 rounded object-contain group-hover:scale-110 transition-transform"
+              />
+            )}
+            <span className="font-medium">
+              {isRedirecting ? "Connecting to Zuup SSO..." : "Sign Up with Zuup Account"}
+            </span>
+            <span className="ml-auto text-[10px] font-mono tracking-wider uppercase px-2 py-0.5 rounded-full bg-primary/20 text-primary border border-primary/30">
+              SSO
+            </span>
           </button>
-        </form>
 
-        <p className="text-center text-sm text-muted-foreground mt-6">
-          Already have an account?{" "}
-          <Link to="/login" className="text-primary hover:underline font-medium">
-            Sign in
-          </Link>
-        </p>
+          <p className="text-center text-xs text-muted-foreground pt-2">
+            Already have an account?{" "}
+            <Link to={`/login?redirect=${encodeURIComponent(redirectTarget)}`} className="text-primary hover:underline font-medium">
+              Sign in with Zuup SSO <ArrowRight size={12} className="inline ml-0.5" />
+            </Link>
+          </p>
+        </div>
 
-        <p className="text-center text-xs text-muted-foreground/50 mt-4">
-          <Link to="/editor" className="hover:text-muted-foreground">
-            Skip — use editor without account →
+        {/* Link to landing */}
+        <div className="text-center mt-6">
+          <Link
+            to="/"
+            className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            ← Return to Zuup Code Home
           </Link>
-        </p>
+        </div>
       </div>
     </div>
   );

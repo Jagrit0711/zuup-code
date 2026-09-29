@@ -12,7 +12,7 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    const { language, version, files } = req.body;
+    const { language, version, files, stdin, args } = req.body;
 
     // Validate required fields
     if (!language || !version || !files || !Array.isArray(files)) {
@@ -21,13 +21,21 @@ export default async function handler(req: any, res: any) {
       });
     }
 
+    const pistonPayload: any = { language, version, files };
+    if (typeof stdin === "string") {
+      pistonPayload.stdin = stdin;
+    }
+    if (Array.isArray(args)) {
+      pistonPayload.args = args;
+    }
+
     const pistonResponse = await fetch(PISTON_API, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: PISTON_AUTH_KEY,
       },
-      body: JSON.stringify({ language, version, files }),
+      body: JSON.stringify(pistonPayload),
     });
 
     const data = await pistonResponse.json();
