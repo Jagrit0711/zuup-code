@@ -9,6 +9,7 @@ import TopBar from "@/components/ide/TopBar";
 import TerminalPanel from "@/components/ide/TerminalPanel";
 import HtmlPreview from "@/components/ide/HtmlPreview";
 import FileTabs from "@/components/ide/FileTabs";
+import Breadcrumbs from "@/components/ide/Breadcrumbs";
 import SettingsModal from "@/components/ide/SettingsModal";
 import NewFileModal from "@/components/ide/NewFileModal";
 import NewProjectModal from "@/components/ide/NewProjectModal";
@@ -133,10 +134,16 @@ const Index = () => {
     }
   }, [user, loading]);
 
+  // Folders state
+  const [folders, setFolders] = useState<string[]>(["src", "public"]);
+
   // File management
   const [files, setFiles] = useState<FileTab[]>(() => {
     const defaultLang = getLanguageById("python");
-    return [createFile("main.py", "python", defaultLang.defaultCode)];
+    return [
+      createFile("main.py", "python", defaultLang.defaultCode),
+      createFile("src/utils.py", "python", "# Helper functions and utilities\n\ndef add(a, b):\n    return a + b\n\ndef greet(name):\n    return f\"Hello, {name}!\"\n"),
+    ];
   });
   const [activeFileId, setActiveFileId] = useState("");
 
@@ -299,8 +306,57 @@ const Index = () => {
     const file = createFile(name, languageId, lang.defaultCode || "");
     setFiles((prev) => [...prev, file]);
     setActiveFileId(file.id);
+
+    // Auto-register parent folders if path contains slashes
+    const parts = name.split("/").filter(Boolean);
+    if (parts.length > 1) {
+      setFolders((prev) => {
+        const next = new Set(prev);
+        let p = "";
+        for (let i = 0; i < parts.length - 1; i++) {
+          p = p ? `${p}/${parts[i]}` : parts[i];
+          next.add(p);
+        }
+        return Array.from(next);
+      });
+    }
+
     recordSnapshot(file.id, file.name, file.content, "Created");
     toast.success(`Created ${name}`);
+  }, []);
+
+  const handleCreateFolder = useCallback((folderPath: string) => {
+    setFolders((prev) => Array.from(new Set([...prev, folderPath])));
+    toast.success(`Created folder "${folderPath}"`);
+  }, []);
+
+  const handleDeleteFolder = useCallback((folderPath: string) => {
+    setFolders((prev) => prev.filter((f) => f !== folderPath && !f.startsWith(folderPath + "/")));
+    setFiles((prev) => {
+      const next = prev.filter((f) => !f.name.startsWith(folderPath + "/"));
+      if (next.length === 0) {
+        const fallback = createFile("main.py", "python", "print('Hello Zuup!')");
+        setActiveFileId(fallback.id);
+        return [fallback];
+      }
+      return next;
+    });
+    toast.success(`Deleted folder "${folderPath}"`);
+  }, []);
+
+  const handleRenameFolder = useCallback((oldPath: string, newPath: string) => {
+    setFolders((prev) => prev.map((f) => {
+      if (f === oldPath) return newPath;
+      if (f.startsWith(oldPath + "/")) return newPath + f.slice(oldPath.length);
+      return f;
+    }));
+    setFiles((prev) => prev.map((f) => {
+      if (f.name.startsWith(oldPath + "/")) {
+        return { ...f, name: newPath + f.name.slice(oldPath.length) };
+      }
+      return f;
+    }));
+    toast.success(`Renamed folder to "${newPath}"`);
   }, []);
 
   const handleDeleteFile = useCallback((id: string) => {
@@ -736,7 +792,14 @@ const Index = () => {
   const showHtmlPreview = activeFile?.languageId === "html" || activeFile?.languageId === "css";
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-background">
+    <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-[#07090e]">
+      {/* ─── Liquid Glass Background Lighting Mesh (Real optical refraction behind panels) ─── */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden z-0">
+        <div className="absolute -top-32 -left-32 h-[550px] w-[550px] rounded-full bg-primary/10 blur-[150px] animate-liquid-1" />
+        <div className="absolute top-1/4 -right-32 h-[650px] w-[650px] rounded-full bg-sky-500/10 blur-[170px] animate-liquid-2" />
+        <div className="absolute -bottom-32 left-1/4 h-[550px] w-[550px] rounded-full bg-violet-600/10 blur-[160px] animate-liquid-1" />
+      </div>
+
       <TopBar
         activeLanguage={activeLanguage}
         activeFileName={activeFile?.name || ""}
@@ -761,7 +824,7 @@ const Index = () => {
         onToggleShortcuts={() => setShortcutsOpen(prev => !prev)}
       />
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden z-10">
         {/* VS Code Left Activity Bar */}
         <ActivityBar
           activeTab={activeSidebarTab}
@@ -772,7 +835,7 @@ const Index = () => {
           profile={profile}
         />
 
-        {/* VS Code Sidebar (Explorer / Search / Timeline) */}
+        {/* VS Code Sidebar (Explorer with Full Folder Tree / Search / Timeline) */}
         {sidebarOpen && (
           <Sidebar
             files={files}
@@ -781,10 +844,14 @@ const Index = () => {
             isCloudProject={!!cloudProjectId}
             hasUnsavedChanges={hasUnsavedChanges}
             activeTab={activeSidebarTab}
+            folders={folders}
             onSelectFile={setActiveFileId}
             onCreateFile={handleNewFile}
             onDeleteFile={handleDeleteFile}
             onRenameFile={handleRenameFile}
+            onCreateFolder={handleCreateFolder}
+            onDeleteFolder={handleDeleteFolder}
+            onRenameFolder={handleRenameFolder}
             onOpenSettings={() => setSettingsOpen(true)}
             onUploadFiles={handleUploadFiles}
             onRestoreSnapshot={handleRestoreSnapshot}
@@ -795,9 +862,9 @@ const Index = () => {
         <PanelGroup direction="vertical" className="flex-1">
           <Panel defaultSize={65} minSize={30}>
             {files.length === 0 ? (
-              <div className="flex h-full items-center justify-center bg-background">
+              <div className="flex h-full items-center justify-center bg-background/50 backdrop-blur-xl">
                 <div className="text-center space-y-5 max-w-xs">
-                  <div className="mx-auto h-20 w-20 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 flex items-center justify-center">
+                  <div className="mx-auto h-20 w-20 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 flex items-center justify-center shadow-lg shadow-primary/10">
                     <FilePlus size={32} className="text-primary/80" />
                   </div>
                   <div className="space-y-2">
@@ -813,7 +880,7 @@ const Index = () => {
                         setSidebarOpen(true);
                         setActiveSidebarTab("explorer");
                       }}
-                      className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:brightness-110 transition-all"
+                      className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:brightness-110 transition-all glow-primary-sm"
                     >
                       <Plus size={16} />
                       Create New File
@@ -833,6 +900,15 @@ const Index = () => {
                   onSelectFile={setActiveFileId}
                   onCloseFile={handleCloseFile}
                 />
+                <Breadcrumbs
+                  activeFilePath={activeFile?.name || ""}
+                  projectName={projectName || "zuup-project"}
+                  isRunning={isRunning}
+                  onNavigateFolder={() => {
+                    setActiveSidebarTab("explorer");
+                    setSidebarOpen(true);
+                  }}
+                />
                 <div className="flex-1 overflow-hidden">
                   <CodeEditor
                     language={activeLanguage.monacoId}
@@ -847,7 +923,7 @@ const Index = () => {
             )}
           </Panel>
 
-          <PanelResizeHandle className="h-1.5 bg-border/50 hover:bg-primary/30 transition-colors cursor-row-resize flex items-center justify-center">
+          <PanelResizeHandle className="h-1.5 bg-white/[0.04] hover:bg-primary/30 transition-colors cursor-row-resize flex items-center justify-center border-y border-white/[0.05]">
             <div className="h-0.5 w-8 rounded-full bg-muted-foreground/30" />
           </PanelResizeHandle>
 

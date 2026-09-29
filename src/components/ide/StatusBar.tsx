@@ -20,7 +20,7 @@ const StatusBar = ({
   onLanguageClick,
 }: StatusBarProps) => {
   return (
-    <footer className="flex h-6 w-full items-center justify-between border-t border-border/60 bg-[#080a10] px-3 text-[11px] text-muted-foreground select-none shrink-0 font-mono z-10">
+    <footer className="flex h-6 w-full items-center justify-between border-t border-white/[0.08] liquid-glass px-3 text-[11px] text-muted-foreground select-none shrink-0 font-mono z-20">
       {/* ─── Left Section ─── */}
       <div className="flex items-center gap-3">
         {/* Branch */}

@@ -1,8 +1,17 @@
 import {
   Terminal as TerminalIcon,
   Trash2,
+  Search,
+  Bug,
+  AlertCircle,
+  Play,
+  X,
+  Plus,
+  Split,
+  ChevronRight,
+  Cpu,
 } from "lucide-react";
-import { useState, useRef, useEffect, KeyboardEvent, useCallback } from "react";
+import { useState, useRef, useEffect, KeyboardEvent, useCallback, useMemo } from "react";
 import { detectNeedsStdin } from "@/lib/languages";
 
 // ─── Virtual Filesystem ────────────────────────────────────────────────────────
@@ -46,6 +55,8 @@ interface TerminalProps {
   requestStdin?: number;
 }
 
+export type PanelTab = "terminal" | "output" | "debugger" | "problems";
+
 const TerminalPanel = ({
   onClear,
   onCommand,
@@ -55,6 +66,9 @@ const TerminalPanel = ({
   externalLines,
   requestStdin,
 }: TerminalProps) => {
+  const [panelTab, setPanelTab] = useState<PanelTab>("terminal");
+  const [filterQuery, setFilterQuery] = useState("");
+  const [activeProcess, setActiveProcess] = useState<"zsh" | "node">("zsh");
   const [input, setInput] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -799,97 +813,216 @@ const TerminalPanel = ({
     }
   }
 
+  const filteredLines = useMemo(() => {
+    if (!filterQuery.trim()) return lines;
+    const q = filterQuery.toLowerCase();
+    return lines.filter((l) => l.text.toLowerCase().includes(q));
+  }, [lines, filterQuery]);
+
+  const outputOnlyLines = useMemo(() => {
+    return filteredLines.filter((l) => l.type === "output" || l.type === "error" || l.type === "success" || l.type === "info");
+  }, [filteredLines]);
+
   const promptLabel = stdinMode
     ? stdinPromptText
     : `${cwd} $`;
 
   return (
-    <div className="flex h-full flex-col glass">
-      {/* Header bar - unified single terminal */}
-      <div className="flex items-center justify-between border-b border-border px-3 py-1.5 bg-secondary/30 shrink-0">
-        <div className="flex items-center gap-2">
-          <TerminalIcon size={13} className="text-primary" />
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-foreground">
-            Terminal
-          </span>
+    <div className="flex h-full flex-col liquid-glass border-t border-white/[0.08] select-none">
+      {/* ─── Header: Multi-Tabs + Filter + Actions ─── */}
+      <div className="flex items-center justify-between border-b border-white/[0.06] px-2.5 py-1 bg-white/[0.02] shrink-0 text-xs font-mono">
+        {/* Left: Tab Switches */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setPanelTab("terminal")}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
+              panelTab === "terminal"
+                ? "bg-white/[0.08] text-foreground border border-white/[0.1] shadow-sm"
+                : "text-muted-foreground/70 hover:text-foreground hover:bg-white/[0.04]"
+            }`}
+          >
+            <TerminalIcon size={12} className={panelTab === "terminal" ? "text-primary" : ""} />
+            <span>Terminal</span>
+            {stdinMode && (
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
+            )}
+          </button>
+
+          <button
+            onClick={() => setPanelTab("output")}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
+              panelTab === "output"
+                ? "bg-white/[0.08] text-foreground border border-white/[0.1] shadow-sm"
+                : "text-muted-foreground/70 hover:text-foreground hover:bg-white/[0.04]"
+            }`}
+          >
+            <span>Output</span>
+          </button>
+
+          <button
+            onClick={() => setPanelTab("debugger")}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
+              panelTab === "debugger"
+                ? "bg-white/[0.08] text-foreground border border-white/[0.1] shadow-sm"
+                : "text-muted-foreground/70 hover:text-foreground hover:bg-white/[0.04]"
+            }`}
+          >
+            <Bug size={11} className={panelTab === "debugger" ? "text-primary" : ""} />
+            <span>Debugger</span>
+          </button>
+
+          <button
+            onClick={() => setPanelTab("problems")}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
+              panelTab === "problems"
+                ? "bg-white/[0.08] text-foreground border border-white/[0.1] shadow-sm"
+                : "text-muted-foreground/70 hover:text-foreground hover:bg-white/[0.04]"
+            }`}
+          >
+            <AlertCircle size={11} className={panelTab === "problems" ? "text-primary" : ""} />
+            <span>Problems</span>
+            <span className="rounded-full bg-white/[0.08] px-1.5 text-[9px] text-muted-foreground">0</span>
+          </button>
+
           {isRunning && (
-            <span className="flex items-center gap-1 text-[10px] text-emerald-400 font-mono">
+            <span className="flex items-center gap-1 text-[10px] text-emerald-400 font-mono ml-2">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
               running
             </span>
           )}
           {isInstalling && (
-            <span className="flex items-center gap-1 text-[10px] text-amber-400 font-mono">
+            <span className="flex items-center gap-1 text-[10px] text-amber-400 font-mono ml-2">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
               installing
             </span>
           )}
-          {stdinMode && (
-            <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-mono font-medium animate-pulse">
-              ● awaiting input
-            </span>
-          )}
         </div>
 
+        {/* Right: Process Pill + Filter Input + Controls */}
         <div className="flex items-center gap-2">
-          {stdinMode && (
-            <span className="text-[10px] text-muted-foreground/70 hidden sm:inline font-mono">
-              Press Enter to run • Shift+Enter for multiline • Ctrl+C to cancel
-            </span>
-          )}
+          {/* Active Process Selector */}
+          <div className="hidden sm:flex items-center gap-1 bg-white/[0.04] border border-white/[0.06] rounded-md px-1.5 py-0.5 text-[10px]">
+            <Cpu size={10} className="text-primary/70" />
+            <select
+              value={activeProcess}
+              onChange={(e) => setActiveProcess(e.target.value as any)}
+              className="bg-transparent text-muted-foreground hover:text-foreground outline-none cursor-pointer text-[10px]"
+            >
+              <option value="zsh" className="bg-[#0f121d]">1: zsh</option>
+              <option value="node" className="bg-[#0f121d]">2: node</option>
+            </select>
+          </div>
+
+          {/* Filter Search Input */}
+          <div className="flex items-center gap-1 rounded-md bg-white/[0.04] border border-white/[0.08] px-2 py-0.5 text-[10px] focus-within:border-primary/50">
+            <Search size={10} className="text-muted-foreground/60 shrink-0" />
+            <input
+              type="text"
+              value={filterQuery}
+              onChange={(e) => setFilterQuery(e.target.value)}
+              placeholder="Filter..."
+              className="w-16 sm:w-24 bg-transparent outline-none text-foreground placeholder:text-muted-foreground/40 font-mono"
+            />
+            {filterQuery && (
+              <button onClick={() => setFilterQuery("")} className="text-muted-foreground hover:text-foreground">
+                <X size={10} />
+              </button>
+            )}
+          </div>
+
+          {/* Clear button */}
           <button
-            onClick={onClear}
-            className="rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-            title="Clear terminal"
+            onClick={() => {
+              setLines([]);
+              onClear();
+            }}
+            className="rounded p-1 text-muted-foreground transition-colors hover:bg-white/[0.08] hover:text-foreground"
+            title="Clear terminal output"
           >
-            <Trash2 size={13} />
+            <Trash2 size={12} />
           </button>
         </div>
       </div>
 
-      {/* Terminal content — unified console stream */}
-      <div
-        ref={terminalRef}
-        className="flex-1 overflow-y-auto p-3 font-mono text-xs"
-        onClick={() => inputRef.current?.focus()}
-      >
-        {lines.map((line, i) => (
-          <div key={i} className={`leading-relaxed whitespace-pre-wrap ${lineClass(line.type)}`}>
-            {line.text || "\u00A0"}
-          </div>
-        ))}
-
-        {/* Interactive Prompt Row */}
-        <div className="flex items-center gap-2 mt-1">
-          <span
-            className={`font-semibold shrink-0 select-none ${
-              stdinMode ? "text-amber-400 font-bold" : "text-violet-400"
-            }`}
-          >
-            {promptLabel}
-          </span>
-          <input
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKey}
-            className="flex-1 bg-transparent text-foreground outline-none caret-primary min-w-0"
-            spellCheck={false}
-            autoComplete="off"
-            autoFocus
-            disabled={isInstalling || isRunning}
-            placeholder={
-              isRunning
-                ? "Running…"
-                : isInstalling
-                ? "Installing…"
-                : stdinMode
-                ? "Type input (e.g. 42) and press Enter"
-                : "Type 'help' or 'run [input]'…"
-            }
-          />
+      {/* ─── Body based on active panelTab ─── */}
+      {panelTab === "problems" ? (
+        <div className="flex-1 p-4 text-xs font-mono text-muted-foreground flex flex-col items-center justify-center space-y-2">
+          <AlertCircle size={24} className="text-emerald-400/50" />
+          <p className="text-foreground/90 font-medium">No problems have been detected in the workspace.</p>
+          <p className="text-[11px] text-muted-foreground/60">Syntax diagnostics and compiler warnings will appear here.</p>
         </div>
-      </div>
+      ) : panelTab === "debugger" ? (
+        <div className="flex-1 p-3 text-xs font-mono grid grid-cols-1 sm:grid-cols-3 gap-2 overflow-y-auto">
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5 space-y-1">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">Variables</span>
+            <p className="text-[11px] text-muted-foreground/70">No variables in scope. Run program to capture locals.</p>
+          </div>
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5 space-y-1">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">Call Stack</span>
+            <p className="text-[11px] text-muted-foreground/70">Not paused on breakpoint. Main thread active.</p>
+          </div>
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5 space-y-1">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">Breakpoints</span>
+            <p className="text-[11px] text-muted-foreground/70">Click gutter in Monaco editor to add breakpoints.</p>
+          </div>
+        </div>
+      ) : panelTab === "output" ? (
+        <div className="flex-1 overflow-y-auto p-3 font-mono text-xs">
+          {outputOnlyLines.length === 0 ? (
+            <p className="text-muted-foreground/50 py-4 text-center">No execution output recorded yet.</p>
+          ) : (
+            outputOnlyLines.map((line, i) => (
+              <div key={i} className={`leading-relaxed whitespace-pre-wrap ${lineClass(line.type)}`}>
+                {line.text || "\u00A0"}
+              </div>
+            ))
+          )}
+        </div>
+      ) : (
+        /* Interactive Shell Terminal */
+        <div
+          ref={terminalRef}
+          className="flex-1 overflow-y-auto p-3 font-mono text-xs"
+          onClick={() => inputRef.current?.focus()}
+        >
+          {filteredLines.map((line, i) => (
+            <div key={i} className={`leading-relaxed whitespace-pre-wrap ${lineClass(line.type)}`}>
+              {line.text || "\u00A0"}
+            </div>
+          ))}
+
+          {/* Interactive Prompt Row */}
+          <div className="flex items-center gap-2 mt-1">
+            <span
+              className={`font-semibold shrink-0 select-none ${
+                stdinMode ? "text-amber-400 font-bold" : "text-violet-400"
+              }`}
+            >
+              {promptLabel}
+            </span>
+            <input
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKey}
+              className="flex-1 bg-transparent text-foreground outline-none caret-primary min-w-0"
+              spellCheck={false}
+              autoComplete="off"
+              autoFocus
+              disabled={isInstalling || isRunning}
+              placeholder={
+                isRunning
+                  ? "Running…"
+                  : isInstalling
+                  ? "Installing…"
+                  : stdinMode
+                  ? "Type input and press Enter"
+                  : "Type 'help' or 'run [input]'…"
+              }
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

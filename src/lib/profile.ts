@@ -15,6 +15,8 @@ export interface Profile {
   updated_at?: string;
 }
 
+let remoteProfileTableAvailable = true;
+
 /**
  * Ensure a profile row exists for the given auth user.
  * Checks `user_profile_details` first (the shared Zuup table in Supabase),
@@ -34,6 +36,22 @@ export async function ensureProfile(user: User): Promise<Profile | null> {
     user.email?.split("@")[0] ||
     null;
 
+  if (!remoteProfileTableAvailable) {
+    return {
+      id: user.id,
+      user_id: user.id,
+      username,
+      display_name: displayName,
+      full_name: displayName,
+      avatar_url: avatarUrl,
+      api_key: "",
+      is_public: true,
+      email_notifications: true,
+      created_at: user.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
   try {
     // 1. Check user_profile_details (active Zuup table)
     const { data: userDetails, error: detailsErr } = await supabase
@@ -41,6 +59,10 @@ export async function ensureProfile(user: User): Promise<Profile | null> {
       .select("*")
       .eq("user_id", user.id)
       .maybeSingle();
+
+    if (detailsErr && (detailsErr.code === "PGRST301" || detailsErr.code === "42P01" || detailsErr.message?.includes("denied") || detailsErr.message?.includes("does not exist"))) {
+      remoteProfileTableAvailable = false;
+    }
 
     if (userDetails && !detailsErr) {
       return {

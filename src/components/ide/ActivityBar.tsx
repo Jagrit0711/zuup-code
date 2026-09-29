@@ -28,55 +28,55 @@ const ActivityBar = ({
   const displayName = profile?.display_name || profile?.username || user?.email?.split("@")[0] || "";
 
   return (
-    <div className="flex h-full w-12 flex-col items-center justify-between border-r border-border bg-[#0a0c13] py-2 shrink-0 select-none z-10">
+    <div className="flex h-full w-12 flex-col items-center justify-between border-r border-white/[0.08] liquid-glass py-2.5 shrink-0 select-none z-20">
       {/* Top action icons */}
       <div className="flex flex-col items-center gap-1.5 w-full">
         {/* Explorer button */}
         <button
           onClick={() => handleItemClick("explorer")}
-          className={`relative flex h-10 w-10 items-center justify-center rounded-lg transition-all ${
+          className={`relative flex h-9 w-9 items-center justify-center rounded-lg transition-all ${
             sidebarOpen && activeTab === "explorer"
-              ? "text-primary bg-primary/10 shadow-sm"
-              : "text-muted-foreground/70 hover:bg-secondary/60 hover:text-foreground"
+              ? "text-primary bg-primary/20 shadow-sm border border-primary/30 glow-primary-sm"
+              : "text-muted-foreground/70 hover:bg-white/[0.08] hover:text-foreground"
           }`}
           title="Explorer (Ctrl+Shift+E)"
         >
           {sidebarOpen && activeTab === "explorer" && (
             <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-primary" />
           )}
-          <Files size={18} />
+          <Files size={17} />
         </button>
 
         {/* Search button */}
         <button
           onClick={() => handleItemClick("search")}
-          className={`relative flex h-10 w-10 items-center justify-center rounded-lg transition-all ${
+          className={`relative flex h-9 w-9 items-center justify-center rounded-lg transition-all ${
             sidebarOpen && activeTab === "search"
-              ? "text-primary bg-primary/10 shadow-sm"
-              : "text-muted-foreground/70 hover:bg-secondary/60 hover:text-foreground"
+              ? "text-primary bg-primary/20 shadow-sm border border-primary/30 glow-primary-sm"
+              : "text-muted-foreground/70 hover:bg-white/[0.08] hover:text-foreground"
           }`}
           title="Search across files (Ctrl+Shift+F)"
         >
           {sidebarOpen && activeTab === "search" && (
             <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-primary" />
           )}
-          <Search size={18} />
+          <Search size={17} />
         </button>
 
         {/* Timeline / History button */}
         <button
           onClick={() => handleItemClick("timeline")}
-          className={`relative flex h-10 w-10 items-center justify-center rounded-lg transition-all ${
+          className={`relative flex h-9 w-9 items-center justify-center rounded-lg transition-all ${
             sidebarOpen && activeTab === "timeline"
-              ? "text-primary bg-primary/10 shadow-sm"
-              : "text-muted-foreground/70 hover:bg-secondary/60 hover:text-foreground"
+              ? "text-primary bg-primary/20 shadow-sm border border-primary/30 glow-primary-sm"
+              : "text-muted-foreground/70 hover:bg-white/[0.08] hover:text-foreground"
           }`}
           title="Timeline & Revision History"
         >
           {sidebarOpen && activeTab === "timeline" && (
             <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-primary" />
           )}
-          <History size={18} />
+          <History size={17} />
         </button>
       </div>
 

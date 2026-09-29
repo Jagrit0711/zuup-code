@@ -82,7 +82,7 @@ const TopBar = ({
 
   return (
     <>
-      <div className="flex h-11 items-center justify-between border-b border-border glass-strong px-3 shrink-0">
+      <div className="flex h-11 items-center justify-between border-b border-white/[0.08] liquid-glass px-3 shrink-0 z-20">
         {/* ─── Left: Logo + Project + New ─── */}
         <div className="flex items-center gap-2">
           <Link to={user ? "/dashboard" : "/"} className="flex items-center gap-1.5 group" title="Home">
