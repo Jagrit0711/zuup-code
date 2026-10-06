@@ -15,7 +15,7 @@ describe("Zuup Auth & Supabase Edge Proxy Configuration", () => {
 
   it("should initialize supabase client targeting the Zuup gateway", () => {
     expect(supabase).toBeDefined();
-    expect(supabase.supabaseUrl).toBe("https://auth.zuup.dev");
+    expect((supabase as unknown as { supabaseUrl: string }).supabaseUrl).toBe("https://auth.zuup.dev");
   });
 });
 
@@ -33,9 +33,11 @@ describe("Profile Management", () => {
           maybeSingle: () => Promise.resolve({ data: null, error: null }),
         }),
       }),
-    } as any);
+    } as unknown as ReturnType<typeof supabase.from>);
 
-    const mockUser: any = {
+    const mockUser = {
+      app_metadata: {},
+      aud: "authenticated",
       id: "test-user-uuid-1234",
       email: "developer@zuup.dev",
       user_metadata: {
@@ -64,7 +66,7 @@ describe("Project Storage (Guest & Offline Fallback)", () => {
     vi.spyOn(supabase.auth, "getUser").mockResolvedValue({
       data: { user: null },
       error: null,
-    } as any);
+    } as unknown as Awaited<ReturnType<typeof supabase.auth.getUser>>);
 
     const project = await createProject(
       "Test Project",

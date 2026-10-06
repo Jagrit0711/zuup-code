@@ -1,26 +1,22 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
 import { Eye } from "lucide-react";
 
 interface HtmlPreviewProps {
   code: string;
 }
 
+const EMPTY_DOCUMENT =
+  '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family:system-ui,sans-serif;color:#6b7280;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}</style></head><body><p>Nothing to preview yet. Start writing HTML.</p></body></html>';
+
+/** Delay before the preview reloads, so typing doesn't restart the page on every keystroke. */
+const PREVIEW_DEBOUNCE_MS = 250;
+
 const HtmlPreview = ({ code }: HtmlPreviewProps) => {
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [renderedCode, setRenderedCode] = useState(code);
 
   useEffect(() => {
-    if (iframeRef.current) {
-      const doc = iframeRef.current.contentDocument;
-      if (doc) {
-        try {
-          doc.open();
-          doc.write(code || '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body><p>No content to preview</p></body></html>');
-          doc.close();
-        } catch (error) {
-          console.error('Failed to write to iframe:', error);
-        }
-      }
-    }
+    const timer = setTimeout(() => setRenderedCode(code), PREVIEW_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
   }, [code]);
 
   return (
@@ -32,12 +28,15 @@ const HtmlPreview = ({ code }: HtmlPreviewProps) => {
         </span>
       </div>
       <div className="flex-1 bg-white">
+        {/*
+          Scripts may run, but the frame is NOT same-origin with the editor (no allow-same-origin),
+          so previewed or shared code cannot read the editor's storage or session.
+        */}
         <iframe
-          ref={iframeRef}
           title="HTML Preview"
           className="h-full w-full border-0"
-          sandbox="allow-same-origin allow-scripts allow-forms"
-          srcDoc={code || '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body><p>No content to preview</p></body></html>'}
+          sandbox="allow-scripts allow-forms allow-modals"
+          srcDoc={renderedCode.trim() ? renderedCode : EMPTY_DOCUMENT}
         />
       </div>
     </div>

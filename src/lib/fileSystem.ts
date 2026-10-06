@@ -18,6 +18,40 @@ export function createFile(name: string, languageId: string, content: string): F
   };
 }
 
+/** Largest text file the editor will import. */
+export const MAX_UPLOAD_BYTES = 1024 * 1024;
+
+export interface ReadTextFilesResult {
+  files: { name: string; content: string }[];
+  /** Names of files that were left out (too large, binary or unreadable). */
+  skipped: string[];
+}
+
+/** Reads user selected files as text, skipping oversized, binary or unreadable ones. */
+export async function readTextFiles(
+  list: FileList | File[],
+  maxBytes: number = MAX_UPLOAD_BYTES
+): Promise<ReadTextFilesResult> {
+  const result: ReadTextFilesResult = { files: [], skipped: [] };
+  for (const file of Array.from(list)) {
+    if (file.size > maxBytes) {
+      result.skipped.push(file.name);
+      continue;
+    }
+    try {
+      const content = await file.text();
+      if (content.includes("\u0000")) {
+        result.skipped.push(file.name);
+        continue;
+      }
+      result.files.push({ name: file.name, content });
+    } catch {
+      result.skipped.push(file.name);
+    }
+  }
+  return result;
+}
+
 export function downloadFile(name: string, content: string) {
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);

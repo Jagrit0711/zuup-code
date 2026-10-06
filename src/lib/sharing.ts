@@ -22,13 +22,14 @@ function getBaseUrl(): string {
 }
 
 // Encode data to base64 URL-safe string
-function encodeData(data: any): string {
+function encodeData(data: unknown): string {
   const jsonString = JSON.stringify(data);
   const base64 = btoa(unescape(encodeURIComponent(jsonString)));
   return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
 // Decode base64 URL-safe string to data
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- callers validate the decoded shape
 export function decodeData(encoded: string): any {
   try {
     // Restore padding and characters

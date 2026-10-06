@@ -1,123 +1,211 @@
-import { X, Type, Monitor } from "lucide-react";
-import { useState } from "react";
+import { Monitor, RotateCcw, Sparkles, Type } from "lucide-react";
+import { useId } from "react";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import {
+  MAX_FONT_SIZE,
+  MIN_FONT_SIZE,
+  TAB_SIZE_OPTIONS,
+  type EditorSettings,
+  useEditorSettings,
+} from "@/lib/editorSettings";
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  fontSize: number;
-  onFontSizeChange: (size: number) => void;
-  tabSize: number;
-  onTabSizeChange: (size: number) => void;
-  wordWrap: boolean;
-  onWordWrapChange: (wrap: boolean) => void;
+  /** @deprecated Ignored; settings are read from and written to the shared store. */
+  fontSize?: number;
+  /** @deprecated Ignored. */
+  onFontSizeChange?: (size: number) => void;
+  /** @deprecated Ignored. */
+  tabSize?: number;
+  /** @deprecated Ignored. */
+  onTabSizeChange?: (size: number) => void;
+  /** @deprecated Ignored. */
+  wordWrap?: boolean;
+  /** @deprecated Ignored. */
+  onWordWrapChange?: (wrap: boolean) => void;
 }
 
-const SettingsModal = ({
-  isOpen,
-  onClose,
-  fontSize,
-  onFontSizeChange,
-  tabSize,
-  onTabSizeChange,
-  wordWrap,
-  onWordWrapChange,
-}: SettingsModalProps) => {
-  if (!isOpen) return null;
+type BooleanKey = {
+  [K in keyof EditorSettings]: EditorSettings[K] extends boolean ? K : never;
+}[keyof EditorSettings];
+
+interface ToggleRowProps {
+  id: string;
+  label: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}
+
+const ToggleRow = ({ id, label, description, checked, onCheckedChange }: ToggleRowProps) => (
+  <div className="flex items-start justify-between gap-4">
+    <div className="min-w-0 space-y-0.5">
+      <label htmlFor={id} className="block cursor-pointer text-xs font-medium text-foreground">
+        {label}
+      </label>
+      <p id={`${id}-desc`} className="text-[11px] leading-snug text-muted-foreground">
+        {description}
+      </p>
+    </div>
+    <Switch
+      id={id}
+      checked={checked}
+      onCheckedChange={onCheckedChange}
+      aria-describedby={`${id}-desc`}
+      className="mt-0.5 h-5 w-9 shrink-0"
+    />
+  </div>
+);
+
+const SectionTitle = ({ icon: Icon, children }: { icon: typeof Type; children: string }) => (
+  <h3 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+    <Icon size={13} aria-hidden="true" />
+    {children}
+  </h3>
+);
+
+const SettingsModal = ({ isOpen, onClose }: SettingsModalProps) => {
+  const { settings, updateSettings, resetSettings } = useEditorSettings();
+  const uid = useId();
+  const ids = {
+    fontSize: `${uid}-font-size`,
+    wordWrap: `${uid}-word-wrap`,
+    minimap: `${uid}-minimap`,
+    formatOnPaste: `${uid}-format-on-paste`,
+    autoComplete: `${uid}-auto-complete`,
+    inlineSuggestions: `${uid}-inline-suggestions`,
+  };
+
+  const toggle = (key: BooleanKey) => (checked: boolean) => updateSettings({ [key]: checked });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-
-      {/* Modal */}
-      <div className="relative z-10 w-full max-w-md rounded-xl glass-strong glow-primary p-0 shadow-2xl">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
-          <div className="flex items-center gap-2">
-            <Monitor size={16} className="text-primary" />
-            <h2 className="text-sm font-semibold text-foreground">Settings</h2>
-          </div>
-          <button
-            onClick={onClose}
-            className="rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-          >
-            <X size={16} />
-          </button>
+    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[90vh] max-w-md gap-0 overflow-y-auto rounded-xl border-border bg-transparent p-0 shadow-2xl glass-strong glow-primary">
+        <div className="flex items-center gap-2 border-b border-border px-5 py-3.5 pr-12">
+          <Monitor size={16} className="text-primary" aria-hidden="true" />
+          <DialogTitle className="text-sm font-semibold text-foreground">Settings</DialogTitle>
         </div>
+        <DialogDescription className="sr-only">
+          Editor preferences. Changes apply immediately and are saved in this browser.
+        </DialogDescription>
 
-        {/* Content */}
-        <div className="space-y-5 p-5">
-          {/* Font Size */}
-          <div className="space-y-2">
-            <label className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Type size={14} className="text-muted-foreground" />
-                <span className="text-xs font-medium text-foreground">Font Size</span>
+        <div className="space-y-6 p-5">
+          <section className="space-y-4" aria-label="Editor">
+            <SectionTitle icon={Type}>Editor</SectionTitle>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label htmlFor={ids.fontSize} className="text-xs font-medium text-foreground">
+                  Font size
+                </label>
+                <span className="font-mono text-xs text-muted-foreground" aria-live="polite">
+                  {settings.fontSize}px
+                </span>
               </div>
-              <span className="text-xs text-muted-foreground font-mono">{fontSize}px</span>
-            </label>
-            <input
-              type="range"
-              min={10}
-              max={24}
-              value={fontSize}
-              onChange={(e) => onFontSizeChange(Number(e.target.value))}
-              className="w-full accent-primary h-1.5 rounded-full appearance-none bg-secondary cursor-pointer"
-            />
-          </div>
-
-          {/* Tab Size */}
-          <div className="space-y-2">
-            <label className="flex items-center justify-between">
-              <span className="text-xs font-medium text-foreground">Tab Size</span>
-              <span className="text-xs text-muted-foreground font-mono">{tabSize} spaces</span>
-            </label>
-            <div className="flex gap-2">
-              {[2, 4, 8].map((size) => (
-                <button
-                  key={size}
-                  onClick={() => onTabSizeChange(size)}
-                  className={`flex-1 rounded py-1.5 text-xs font-medium transition-colors ${
-                    tabSize === size
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-secondary text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {size}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Word Wrap */}
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-foreground">Word Wrap</span>
-            <button
-              onClick={() => onWordWrapChange(!wordWrap)}
-              className={`relative h-5 w-9 rounded-full transition-colors ${
-                wordWrap ? "bg-primary" : "bg-secondary"
-              }`}
-            >
-              <span
-                className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-foreground transition-transform ${
-                  wordWrap ? "translate-x-4" : ""
-                }`}
+              <input
+                id={ids.fontSize}
+                type="range"
+                min={MIN_FONT_SIZE}
+                max={MAX_FONT_SIZE}
+                step={1}
+                value={settings.fontSize}
+                onChange={(e) => updateSettings({ fontSize: Number(e.target.value) })}
+                className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-secondary accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />
-            </button>
-          </div>
+              <p className="text-[11px] text-muted-foreground">Ctrl or Cmd with the mouse wheel zooms the editor too.</p>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span id={`${uid}-tab-size`} className="text-xs font-medium text-foreground">
+                  Tab size
+                </span>
+                <span className="font-mono text-xs text-muted-foreground">{settings.tabSize} spaces</span>
+              </div>
+              <ToggleGroup
+                type="single"
+                value={String(settings.tabSize)}
+                onValueChange={(v) => v && updateSettings({ tabSize: Number(v) })}
+                aria-labelledby={`${uid}-tab-size`}
+                className="grid grid-cols-3 gap-2"
+              >
+                {TAB_SIZE_OPTIONS.map((size) => (
+                  <ToggleGroupItem
+                    key={size}
+                    value={String(size)}
+                    aria-label={`${size} spaces`}
+                    className="h-8 rounded bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
+                  >
+                    {size}
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroup>
+            </div>
+
+            <ToggleRow
+              id={ids.wordWrap}
+              label="Word wrap"
+              description="Wrap long lines instead of scrolling sideways."
+              checked={settings.wordWrap}
+              onCheckedChange={toggle("wordWrap")}
+            />
+            <ToggleRow
+              id={ids.minimap}
+              label="Minimap"
+              description="Show the code overview on the right edge."
+              checked={settings.minimap}
+              onCheckedChange={toggle("minimap")}
+            />
+            <ToggleRow
+              id={ids.formatOnPaste}
+              label="Format on paste"
+              description="Re-indent pasted code to match its surroundings."
+              checked={settings.formatOnPaste}
+              onCheckedChange={toggle("formatOnPaste")}
+            />
+          </section>
+
+          <section className="space-y-4" aria-label="Suggestions">
+            <SectionTitle icon={Sparkles}>Suggestions</SectionTitle>
+            <ToggleRow
+              id={ids.autoComplete}
+              label="Autocomplete"
+              description="Show completions while you type and after characters like a dot."
+              checked={settings.autoComplete}
+              onCheckedChange={toggle("autoComplete")}
+            />
+            <ToggleRow
+              id={ids.inlineSuggestions}
+              label="Inline suggestions"
+              description="Show faded ghost text to finish the line or block. Tab accepts it, Ctrl or Cmd with the right arrow accepts one word, Esc dismisses it."
+              checked={settings.inlineSuggestions}
+              onCheckedChange={toggle("inlineSuggestions")}
+            />
+          </section>
         </div>
 
-        {/* Footer */}
-        <div className="border-t border-border px-5 py-3 flex justify-end">
+        <div className="flex items-center justify-between gap-3 border-t border-border px-5 py-3">
           <button
+            type="button"
+            onClick={resetSettings}
+            className="flex items-center gap-1.5 rounded px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <RotateCcw size={12} aria-hidden="true" />
+            Reset to defaults
+          </button>
+          <button
+            type="button"
             onClick={onClose}
-            className="rounded px-4 py-1.5 text-xs font-medium bg-primary text-primary-foreground transition-colors hover:brightness-110"
+            className="rounded bg-primary px-4 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             Done
           </button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 };
 

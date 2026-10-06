@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&family=Caveat:wght@500;600&family=Bricolage+Grotesque:opsz,wght@12..96,500..800&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -71,6 +71,23 @@
   code, pre, .font-mono {
     font-family: 'JetBrains Mono', monospace;
   }
+  .font-hand {
+    font-family: 'Caveat', cursive;
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  ::selection {
+    background: hsl(var(--primary) / 0.35);
+    color: #fff;
+  }
+}
+
+/* Smooth in-page anchor scrolling, only for people who have not asked for less motion. */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
 }
 
 @layer utilities {
@@ -142,6 +159,27 @@
     -webkit-backdrop-filter: blur(16px);
     box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.16),
                 0 2px 6px 0 rgba(0, 0, 0, 0.15);
+  }
+
+  /* ─── Marketing / site chrome utilities ─── */
+  /* 40px blueprint grid, as used in the zuup.dev footer. Pair with an opacity utility. */
+  .bg-grid-40 {
+    background-image:
+      linear-gradient(#fff 1px, transparent 1px),
+      linear-gradient(90deg, #fff 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+  /* White-to-muted headline gradient. */
+  .text-gradient {
+    background-image: linear-gradient(180deg, #fff 30%, rgba(255, 255, 255, 0.55));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  /* Visible keyboard focus for site chrome and marketing pages. */
+  .focus-ring:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 3px;
   }
 
   /* Tree indentation guide line */

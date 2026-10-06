@@ -98,14 +98,14 @@ export async function executeCode(
     if (output.length === 0) output.push("✅ Code executed successfully with no output.");
 
     return { output, success };
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("Execution error:", err);
     return {
       output: [
         "❌ Failed to reach code execution service.",
         "",
         "🔧 Check your internet connection and try again.",
-        err.message ? `Details: ${err.message}` : "",
+        err instanceof Error && err.message ? `Details: ${err.message}` : "",
       ].filter(Boolean),
       success: false,
     };

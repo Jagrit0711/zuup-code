@@ -1,4 +1,5 @@
-import { GitBranch, Cloud, CloudOff, Loader2, CheckCircle2, Cpu } from "lucide-react";
+import type { ReactNode } from "react";
+import { Cloud, CloudOff, Loader2, CheckCircle2, Cpu } from "lucide-react";
 
 interface StatusBarProps {
   cursorPosition: { line: number; col: number };
@@ -8,6 +9,8 @@ interface StatusBarProps {
   isSaving: boolean;
   hasUnsavedChanges: boolean;
   onLanguageClick?: () => void;
+  /** GitHub sync indicator (repository, branch and status). */
+  githubStatus?: ReactNode;
 }
 
 const StatusBar = ({
@@ -18,16 +21,14 @@ const StatusBar = ({
   isSaving,
   hasUnsavedChanges,
   onLanguageClick,
+  githubStatus,
 }: StatusBarProps) => {
   return (
     <footer className="flex h-6 w-full items-center justify-between border-t border-white/[0.08] liquid-glass px-3 text-[11px] text-muted-foreground select-none shrink-0 font-mono z-20">
       {/* ─── Left Section ─── */}
       <div className="flex items-center gap-3">
-        {/* Branch */}
-        <div className="flex items-center gap-1 hover:text-foreground transition-colors cursor-default" title="Git Branch: main">
-          <GitBranch size={11} className="text-primary/80" />
-          <span>main</span>
-        </div>
+        {/* GitHub repository, branch and sync state */}
+        {githubStatus}
 
         {/* Sync Status */}
         <div className="flex items-center gap-1 hover:text-foreground transition-colors cursor-default">

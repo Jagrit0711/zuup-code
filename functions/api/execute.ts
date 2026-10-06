@@ -50,13 +50,13 @@ export async function onRequest({ request }: { request: Request }) {
     return Response.json(data, {
       status: pistonResponse.status,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Piston proxy error:", error);
 
     return Response.json(
       {
         message: "Failed to reach Piston API",
-        error: error?.message ?? "Unknown error",
+        error: error instanceof Error ? error.message : "Unknown error",
       },
       { status: 502 }
     );

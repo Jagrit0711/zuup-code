@@ -154,7 +154,9 @@ export function getFileIconInfo(fileName: string): {
   badgeColor: string;
   symbol?: string;
 } {
-  const ext = fileName.split(".").pop()?.toLowerCase() || "";
+  const base = fileName.split("/").pop() || "";
+  const dot = base.lastIndexOf(".");
+  const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
 
   switch (ext) {
     case "jsx":
@@ -194,6 +196,49 @@ export function getFileIconInfo(fileName: string): {
     case "bash":
     case "zsh":
       return { iconType: "shell", badgeColor: "text-emerald-300", symbol: ">_" };
+    case "php":
+      return { iconType: "php", badgeColor: "text-indigo-300", symbol: "php" };
+    case "rb":
+      return { iconType: "ruby", badgeColor: "text-red-400", symbol: "rb" };
+    case "swift":
+      return { iconType: "swift", badgeColor: "text-orange-400", symbol: "Sw" };
+    case "cs":
+      return { iconType: "csharp", badgeColor: "text-violet-400", symbol: "C#" };
+    case "kt":
+    case "kts":
+      return { iconType: "kotlin", badgeColor: "text-fuchsia-400", symbol: "Kt" };
+    case "lua":
+      return { iconType: "lua", badgeColor: "text-blue-300", symbol: "Lu" };
+    case "pl":
+    case "pm":
+      return { iconType: "perl", badgeColor: "text-sky-300", symbol: "Pl" };
+    case "r":
+      return { iconType: "r", badgeColor: "text-blue-400", symbol: "R" };
+    case "scala":
+    case "sc":
+      return { iconType: "scala", badgeColor: "text-red-500", symbol: "Sc" };
+    case "hs":
+      return { iconType: "haskell", badgeColor: "text-purple-300", symbol: "λ" };
+    case "clj":
+    case "cljs":
+    case "cljc":
+    case "edn":
+      return { iconType: "clojure", badgeColor: "text-lime-400", symbol: "Cl" };
+    case "dart":
+      return { iconType: "dart", badgeColor: "text-cyan-400", symbol: "Da" };
+    case "ex":
+    case "exs":
+      return { iconType: "elixir", badgeColor: "text-purple-400", symbol: "Ex" };
+    case "nim":
+      return { iconType: "nim", badgeColor: "text-yellow-300", symbol: "Ni" };
+    case "yaml":
+    case "yml":
+      return { iconType: "yaml", badgeColor: "text-rose-300", symbol: "Y" };
+    case "xml":
+    case "svg":
+      return { iconType: "xml", badgeColor: "text-orange-300", symbol: "<>" };
+    case "csv":
+      return { iconType: "csv", badgeColor: "text-green-400", symbol: "CSV" };
     default:
       return { iconType: "file", badgeColor: "text-muted-foreground", symbol: "📄" };
   }

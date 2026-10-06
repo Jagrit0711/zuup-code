@@ -101,7 +101,7 @@ const ShareView = () => {
               type: "project",
               title: decoded.name || "Shared Project",
               language: decoded.files[0]?.language || "python",
-              files: decoded.files.map((f: any) => ({
+              files: decoded.files.map((f: { fileName?: string; name?: string; language?: string; code?: string; content?: string }) => ({
                 name: f.fileName || f.name,
                 language: f.language || "python",
                 content: f.code || f.content || "",
@@ -203,8 +203,9 @@ const ShareView = () => {
         result.success ? "✅ Execution finished successfully." : "❌ Execution finished with errors.",
       ];
       setTerminalOutput(out);
-    } catch (err: any) {
-      setTerminalOutput([`❌ Execution error: ${err?.message || "Failed to reach execution server"}`]);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "";
+      setTerminalOutput([`❌ Execution error: ${message || "Failed to reach execution server"}`]);
     } finally {
       setIsRunning(false);
     }

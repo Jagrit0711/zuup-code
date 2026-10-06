@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import CodeEditor from "@/components/ide/CodeEditor";
@@ -10,36 +10,79 @@ import TerminalPanel from "@/components/ide/TerminalPanel";
 import HtmlPreview from "@/components/ide/HtmlPreview";
 import FileTabs from "@/components/ide/FileTabs";
 import Breadcrumbs from "@/components/ide/Breadcrumbs";
+import EditorEmptyState from "@/components/ide/EditorEmptyState";
 import SettingsModal from "@/components/ide/SettingsModal";
-import NewFileModal from "@/components/ide/NewFileModal";
 import NewProjectModal from "@/components/ide/NewProjectModal";
 import type { NewProjectData } from "@/components/ide/NewProjectModal";
 import ShareModal from "@/components/ide/ShareModal";
-import { getLanguageById, languages, detectNeedsStdin } from "@/lib/languages";
-import { FileTab, createFile, downloadFile, copyToClipboard } from "@/lib/fileSystem";
+import GitHubDialog from "@/components/ide/github/GitHubDialog";
+import ConflictDialog from "@/components/ide/github/ConflictDialog";
+import SyncStatusIndicator from "@/components/ide/github/SyncStatusIndicator";
+import { useGitHubSync, type GitHubSync } from "@/hooks/useGitHubSync";
+import { type AppliedChange, type LocalFile, SCRATCH_PROJECT_KEY } from "@/lib/github";
+import { applyRemoteChanges, toSyncFiles, workspaceFromSyncFiles } from "@/lib/githubWorkspace";
+import { getLanguageById, detectLanguageFromFilename, detectNeedsStdin } from "@/lib/languages";
+import { FileTab, createFile, downloadFile } from "@/lib/fileSystem";
+import {
+  type ActionResult,
+  findPathConflict,
+  makeUniquePath,
+  planFileRename,
+  planFolderRename,
+  planNewFile,
+  planNewFolder,
+  replaceExtension,
+  validateEntryName,
+} from "@/lib/fileNames";
+import {
+  FORK_STORAGE_KEY,
+  type WorkspaceState,
+  addFile,
+  addFiles,
+  appendFiles,
+  clearWorkspace,
+  closeTab,
+  emptyWorkspace,
+  foldersOf,
+  hasStoredWorkspace,
+  importFiles,
+  isWorkspaceEmpty,
+  loadWorkspace,
+  openFile,
+  readExternalWorkspaceSource,
+  removeFile,
+  removeFolder,
+  renameFolder,
+  saveWorkspace,
+  workspaceSignature,
+} from "@/lib/workspace";
+import { useEditorSettings } from "@/lib/editorSettings";
 import { executeCode } from "@/lib/pistonApi";
 import { loadSharedCode, loadSharedProject, clearUrlParams } from "@/lib/sharing";
 import { recordSnapshot } from "@/lib/timelineStorage";
 import { useAuth } from "@/contexts/AuthContext";
-import { createProject, updateProject, getProject, type SavedProject } from "@/lib/projectStorage";
+import { createProject, updateProject, getProject } from "@/lib/projectStorage";
 import { toast } from "sonner";
-import { FilePlus, Plus } from "lucide-react";
 
 // Keyboard shortcuts data
 const SHORTCUTS = [
   { keys: "Ctrl+S", desc: "Save" },
   { keys: "Ctrl+Enter", desc: "Run code" },
-  { keys: "Ctrl+N", desc: "New file" },
-  { keys: "Ctrl+Shift+N", desc: "New project" },
+  { keys: "Ctrl+N / Alt+N", desc: "New file" },
+  { keys: "Ctrl+Shift+N / Alt+Shift+N", desc: "New project" },
   { keys: "Ctrl+Shift+S", desc: "Download file" },
+  { keys: "F2 / Del", desc: "Rename / delete in Explorer" },
   { keys: "Ctrl+/", desc: "Show shortcuts" },
   { keys: "Ctrl+Wheel", desc: "Zoom in/out" },
 ];
 
-// Dynamic extension → languageId — uses the languages registry so it's always in sync
-function extToLangId(ext: string): string {
-  return languages.find((l) => l.extension === `.${ext}`)?.id ?? "plaintext";
-}
+type TerminalLine = {
+  text: string;
+  type: "output" | "error" | "success" | "info" | "prompt" | "stdin-prompt";
+};
+
+const SCRATCH_AUTOSAVE_MS = 500;
+const CLOUD_AUTOSAVE_MS = 3000;
 
 /**
  * Statically scan source code + runtime output to find files
@@ -55,9 +98,8 @@ function detectCreatedFiles(
   const add = (name: string) => {
     if (!name || name.includes("/") || name.includes("\\")) return;
     if (found.find((f) => f.name === name)) return;
-    const ext = name.split(".").pop()?.toLowerCase() || "";
     // Always empty — the user's code writes the real content
-    found.push({ name, langId: extToLangId(ext), content: "" });
+    found.push({ name, langId: detectLanguageFromFilename(name).id, content: "" });
   };
 
   // ── Python ─────────────────────────────────────────────────────────────────
@@ -122,9 +164,33 @@ function detectCreatedFiles(
   return found;
 }
 
+function toResultLines(output: string[], success: boolean): TerminalLine[] {
+  return [
+    ...output.flatMap((line) =>
+      line.split("\n").map((l) => ({
+        text: l,
+        type: (l.startsWith("❌") || l.toLowerCase().includes("error") || l.toLowerCase().includes("traceback")
+          ? "error"
+          : "output") as "output" | "error",
+      }))
+    ),
+    { text: "", type: "output" as const },
+    {
+      text: success ? "✅ Execution completed." : "❌ Execution failed.",
+      type: success ? ("success" as const) : ("error" as const),
+    },
+  ];
+}
+
+interface ForkPayload {
+  name?: string;
+  files?: { fileName: string; language?: string; code: string }[];
+}
+
 const Index = () => {
   const { user, profile, loading, signInWithZuup } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
+  const { settings } = useEditorSettings();
 
   // Enforce authentication for accessing the code editor
   useEffect(() => {
@@ -134,18 +200,53 @@ const Index = () => {
     }
   }, [user, loading]);
 
-  // Folders state
-  const [folders, setFolders] = useState<string[]>(["src", "public"]);
-
-  // File management
-  const [files, setFiles] = useState<FileTab[]>(() => {
-    const defaultLang = getLanguageById("python");
-    return [
-      createFile("main.py", "python", defaultLang.defaultCode),
-      createFile("src/utils.py", "python", "# Helper functions and utilities\n\ndef add(a, b):\n    return a + b\n\ndef greet(name):\n    return f\"Hello, {name}!\"\n"),
-    ];
+  // ── Boot: restore the scratch workspace unless the URL asks for something specific ──
+  const [boot] = useState(() => {
+    const external = readExternalWorkspaceSource();
+    return { external, restored: external ? null : loadWorkspace() };
   });
-  const [activeFileId, setActiveFileId] = useState("");
+
+  // Workspace (files, folders, tabs) lives in one object mirrored into a ref, so event handlers
+  // always read the latest state and never run side effects inside state updaters.
+  const [ws, setWs] = useState<WorkspaceState>(() =>
+    boot.restored
+      ? {
+          files: boot.restored.files,
+          folders: boot.restored.folders,
+          activeFileId: boot.restored.activeFileId,
+          openTabIds: boot.restored.openTabIds,
+        }
+      : emptyWorkspace()
+  );
+  const wsRef = useRef<WorkspaceState>(ws);
+  const commitWorkspace = useCallback((next: WorkspaceState) => {
+    wsRef.current = next;
+    setWs(next);
+  }, []);
+  const updateWorkspace = useCallback(
+    (fn: (state: WorkspaceState) => WorkspaceState) => commitWorkspace(fn(wsRef.current)),
+    [commitWorkspace]
+  );
+
+  const { files, folders, activeFileId, openTabIds } = ws;
+  const activeFile = useMemo(() => files.find((f) => f.id === activeFileId) ?? null, [files, activeFileId]);
+  const tabFiles = useMemo(
+    () => openTabIds.map((id) => files.find((f) => f.id === id)).filter((f): f is FileTab => !!f),
+    [files, openTabIds]
+  );
+
+  // Language used when there is no active file (picker + extension for extension-less names)
+  const [fallbackLangId, setFallbackLangId] = useState(
+    () => boot.restored?.files.find((f) => f.id === boot.restored?.activeFileId)?.languageId ?? "python"
+  );
+  const activeFileLanguageId = activeFile?.languageId;
+  useEffect(() => {
+    if (activeFileLanguageId) setFallbackLangId(activeFileLanguageId);
+  }, [activeFileLanguageId]);
+  const defaultLanguageId = activeFile?.languageId ?? fallbackLangId;
+  const defaultLangRef = useRef(defaultLanguageId);
+  defaultLangRef.current = defaultLanguageId;
+  const activeLanguage = getLanguageById(defaultLanguageId);
 
   // Program standard input (stdin) for scanf, cin, input(), etc.
   const [programStdin, setProgramStdin] = useState("");
@@ -153,41 +254,260 @@ const Index = () => {
 
   // Cloud project state
   const [cloudProjectId, setCloudProjectId] = useState<string | null>(null);
-  const [projectName, setProjectName] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState<string | null>(boot.restored?.projectName ?? null);
   const [isSaving, setIsSaving] = useState(false);
-  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  // A restored scratch workspace has never been saved to a project.
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(() => (boot.restored?.files.length ?? 0) > 0);
 
-  // Refs to avoid stale closures in auto-save timer
-  const filesRef = useRef(files);
-  const cloudProjectIdRef = useRef(cloudProjectId);
+  // Refs to avoid stale closures in timers and async callbacks
+  const userRef = useRef(user);
+  const cloudProjectIdRef = useRef<string | null>(null);
   const projectNameRef = useRef(projectName);
-  const isSavingRef = useRef(isSaving);
-  useEffect(() => { filesRef.current = files; }, [files]);
-  useEffect(() => { cloudProjectIdRef.current = cloudProjectId; }, [cloudProjectId]);
+  const isSavingRef = useRef(false);
+  const pendingSaveRef = useRef(false);
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadedProjectIdRef = useRef<string | null>(null);
+  // While the URL points at a project/share/fork that has not loaded yet, never overwrite the scratch copy.
+  const autosaveBlockedRef = useRef(boot.external);
+  const storageWarnedRef = useRef(false);
+  // GitHub link operations, for handlers declared before the sync hook.
+  const githubRef = useRef<Pick<GitHubSync, "rekey" | "forget"> | null>(null);
+  useEffect(() => { userRef.current = user; }, [user]);
   useEffect(() => { projectNameRef.current = projectName; }, [projectName]);
-  useEffect(() => { isSavingRef.current = isSaving; }, [isSaving]);
 
-  // Load cloud project if ?project=<id> is in URL
-  useEffect(() => {
-    const projectId = searchParams.get("project");
-    if (projectId && user) {
-      getProject(projectId).then((project) => {
-        if (project && project.files.length > 0) {
-          const loadedFiles = project.files.map((f) =>
-            createFile(f.name, f.language, f.content)
-          );
-          setFiles(loadedFiles);
-          setActiveFileId(loadedFiles[0].id);
-          setCloudProjectId(project.id);
-          setProjectName(project.name);
-          toast.success(`Opened "${project.name}"`);
+  const setCloudProject = useCallback((id: string | null) => {
+    cloudProjectIdRef.current = id;
+    setCloudProjectId(id);
+  }, []);
+
+  /** Keeps ?project=<id> in the URL so a refresh reopens the same project. */
+  const syncProjectParam = useCallback(
+    (id: string | null) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (id) next.set("project", id);
+          else next.delete("project");
+          return next;
+        },
+        { replace: true }
+      );
+    },
+    [setSearchParams]
+  );
+
+  // ── Cloud / guest-project saving ──
+  const performCloudSave = useCallback(async () => {
+    if (!userRef.current) return;
+    if (isSavingRef.current) {
+      pendingSaveRef.current = true;
+      return;
+    }
+    isSavingRef.current = true;
+    setIsSaving(true);
+
+    const snapshotFiles = wsRef.current.files;
+    const snapshotSignature = workspaceSignature(snapshotFiles);
+    const currentCloudId = cloudProjectIdRef.current;
+    const projectFiles = snapshotFiles.map((f) => ({ name: f.name, language: f.languageId, content: f.content }));
+    const primaryLang = snapshotFiles[0]?.languageId || defaultLangRef.current;
+    let succeeded = false;
+
+    try {
+      if (currentCloudId) {
+        const updated = await updateProject(currentCloudId, { files: projectFiles, language: primaryLang });
+        if (updated) {
+          succeeded = true;
+          toast.success("Saved to cloud");
+        } else {
+          toast.error("Failed to save. Your changes are still in the editor.");
         }
+      } else {
+        const name = projectNameRef.current || snapshotFiles[0]?.name || "Untitled";
+        const created = await createProject(name, "", primaryLang, projectFiles);
+        if (created) {
+          succeeded = true;
+          // A scratch workspace linked to GitHub keeps its link (and sync base) as a project.
+          githubRef.current?.rekey(SCRATCH_PROJECT_KEY, created.id);
+          setCloudProject(created.id);
+          setProjectName(created.name);
+          projectNameRef.current = created.name;
+          loadedProjectIdRef.current = created.id;
+          clearWorkspace();
+          syncProjectParam(created.id);
+          toast.success("Project saved to cloud");
+        } else {
+          toast.error("Could not create a cloud project.");
+        }
+      }
+    } catch (err) {
+      console.error("Cloud save error:", err);
+      toast.error("Error saving to cloud");
+    }
+
+    if (succeeded) {
+      // Only clear the "unsaved" markers when nothing changed while the request was in flight.
+      if (workspaceSignature(wsRef.current.files) === snapshotSignature) {
+        commitWorkspace({ ...wsRef.current, files: wsRef.current.files.map((f) => (f.isDirty ? { ...f, isDirty: false } : f)) });
+        setHasUnsavedChanges(false);
+      } else {
+        pendingSaveRef.current = true;
+      }
+    }
+
+    isSavingRef.current = false;
+    setIsSaving(false);
+    if (pendingSaveRef.current) {
+      pendingSaveRef.current = false;
+      void performCloudSave();
+    }
+  }, [commitWorkspace, setCloudProject, syncProjectParam]);
+
+  const scheduleCloudAutosave = useCallback(() => {
+    if (!cloudProjectIdRef.current || !userRef.current) return;
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    autoSaveTimer.current = setTimeout(() => {
+      void performCloudSave();
+    }, CLOUD_AUTOSAVE_MS);
+  }, [performCloudSave]);
+
+  /** Call after any change to files/folders so "unsaved" state and cloud auto-save stay correct. */
+  const markChanged = useCallback(() => {
+    setHasUnsavedChanges(true);
+    scheduleCloudAutosave();
+  }, [scheduleCloudAutosave]);
+
+  useEffect(
+    () => () => {
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    },
+    []
+  );
+
+  // ── GitHub sync ──
+  // Workspace file names are project-relative paths, so they map 1:1 onto the synced files.
+  const getSyncFiles = useCallback(() => toSyncFiles(wsRef.current.files), []);
+  const applyRemoteFromGitHub = useCallback(
+    (remoteFiles: LocalFile[], changes: AppliedChange[]) => {
+      const result = applyRemoteChanges(wsRef.current, remoteFiles, changes, { markDirty: !!cloudProjectIdRef.current });
+      commitWorkspace(result.state);
+      markChanged();
+    },
+    [commitWorkspace, markChanged]
+  );
+  const replaceFilesFromGitHub = useCallback(
+    (remoteFiles: LocalFile[]) => {
+      commitWorkspace(workspaceFromSyncFiles(remoteFiles, { markDirty: !!cloudProjectIdRef.current }));
+      markChanged();
+    },
+    [commitWorkspace, markChanged]
+  );
+  // Lets the editor dispose Monaco models of deleted files.
+  const liveFileIds = useMemo(() => files.map((f) => f.id), [files]);
+
+  const github = useGitHubSync({
+    projectKey: cloudProjectId ?? SCRATCH_PROJECT_KEY,
+    enabled: !!user,
+    getFiles: getSyncFiles,
+    filesVersion: files,
+    onRemoteApplied: applyRemoteFromGitHub,
+    onReplaceFiles: replaceFilesFromGitHub,
+  });
+  githubRef.current = github;
+
+  // ── Scratch workspace autosave (localStorage) ──
+  const persistScratch = useCallback(() => {
+    if (autosaveBlockedRef.current || cloudProjectIdRef.current) return;
+    const state = wsRef.current;
+    // Don't create a storage entry for a pristine, never-used workspace.
+    if (isWorkspaceEmpty(state) && !hasStoredWorkspace()) return;
+    const ok = saveWorkspace(state, projectNameRef.current);
+    if (!ok && !storageWarnedRef.current) {
+      storageWarnedRef.current = true;
+      toast.warning("Couldn't keep a local copy of your work", {
+        description: "Browser storage is full or blocked. Download your files or save to a project.",
       });
     }
-  }, [searchParams, user]);
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(persistScratch, SCRATCH_AUTOSAVE_MS);
+    return () => clearTimeout(timer);
+  }, [ws, projectName, cloudProjectId, persistScratch]);
+
+  // Flush immediately when the tab is hidden or closed so the last keystrokes are never lost.
+  useEffect(() => {
+    const flush = () => persistScratch();
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [persistScratch]);
+
+  // ── Load a project when ?project=<id> is in the URL ──
+  useEffect(() => {
+    const projectId = searchParams.get("project");
+    if (!projectId || !user) return;
+    if (loadedProjectIdRef.current === projectId || cloudProjectIdRef.current === projectId) return;
+    loadedProjectIdRef.current = projectId;
+    autosaveBlockedRef.current = true;
+
+    getProject(projectId)
+      .then((project) => {
+        if (loadedProjectIdRef.current !== projectId) return; // a newer navigation took over
+        if (!project) {
+          toast.error("Couldn't open that project", { description: "It may have been deleted or isn't available." });
+          loadedProjectIdRef.current = null;
+          autosaveBlockedRef.current = false;
+          syncProjectParam(null);
+          const scratch = loadWorkspace();
+          if (scratch && isWorkspaceEmpty(wsRef.current)) {
+            commitWorkspace({
+              files: scratch.files,
+              folders: scratch.folders,
+              activeFileId: scratch.activeFileId,
+              openTabIds: scratch.openTabIds,
+            });
+            setProjectName(scratch.projectName);
+            setHasUnsavedChanges(scratch.files.length > 0);
+          }
+          return;
+        }
+        const loadedFiles = importFiles(
+          project.files.map((f) => ({ name: f.name, content: f.content, languageId: f.language }))
+        );
+        const first = loadedFiles[0];
+        commitWorkspace({
+          files: loadedFiles,
+          folders: foldersOf(loadedFiles),
+          activeFileId: first?.id ?? "",
+          openTabIds: first ? [first.id] : [],
+        });
+        setCloudProject(project.id);
+        setProjectName(project.name);
+        projectNameRef.current = project.name;
+        setHasUnsavedChanges(false);
+        clearWorkspace();
+        githubRef.current?.forget(SCRATCH_PROJECT_KEY);
+        toast.success(`Opened "${project.name}"`);
+      })
+      .catch((err) => {
+        console.error("Failed to open project:", err);
+        if (loadedProjectIdRef.current === projectId) {
+          loadedProjectIdRef.current = null;
+          autosaveBlockedRef.current = false;
+        }
+        toast.error("Couldn't open that project");
+      });
+  }, [searchParams, user, commitWorkspace, setCloudProject, syncProjectParam]);
 
   // Open New Project modal when navigated from Dashboard with ?new=true
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   useEffect(() => {
     if (searchParams.get("new") === "true") {
       setNewProjectOpen(true);
@@ -201,40 +521,55 @@ const Index = () => {
   // UI state
   const [isRunning, setIsRunning] = useState(false);
   // Lines pushed into the terminal after execution
-  const [terminalExternalLines, setTerminalExternalLines] = useState<{ text: string; type: "output" | "error" | "success" | "info" | "prompt" | "stdin-prompt" }[]>([]);
+  const [terminalExternalLines, setTerminalExternalLines] = useState<TerminalLine[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [newFileOpen, setNewFileOpen] = useState(false);
-  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   // VS Code Layout State
   const [activeSidebarTab, setActiveSidebarTab] = useState<SidebarTab>("explorer");
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 768);
   const [inlineCreateTrigger, setInlineCreateTrigger] = useState(0);
+  const [newFileRequested, setNewFileRequested] = useState(false);
   const [cursorPosition, setCursorPosition] = useState({ line: 1, col: 1 });
 
-  // Settings
-  const [fontSize, setFontSize] = useState(14);
-  const [tabSize, setTabSize] = useState(2);
-  const [wordWrap, setWordWrap] = useState(false);
+  /** Opens the Explorer and starts an inline "new file" input. */
+  const requestNewFile = useCallback(() => {
+    setSidebarOpen(true);
+    setActiveSidebarTab("explorer");
+    setNewFileRequested(true);
+  }, []);
+  // Fire the trigger once the Explorer is actually on screen, so the input always receives it.
+  useEffect(() => {
+    if (newFileRequested && sidebarOpen && activeSidebarTab === "explorer") {
+      setInlineCreateTrigger((n) => n + 1);
+      setNewFileRequested(false);
+    }
+  }, [newFileRequested, sidebarOpen, activeSidebarTab]);
 
-  // Check for shared code or project in URL or forked project on component mount
+  // Check for forked project / shared code / shared project on mount
   useEffect(() => {
     // Check for forked project from ShareView
     try {
-      const forkRaw = localStorage.getItem("zuup_fork_project");
+      const forkRaw = localStorage.getItem(FORK_STORAGE_KEY);
       if (forkRaw) {
-        const forkData = JSON.parse(forkRaw);
-        if (forkData && forkData.files && forkData.files.length > 0) {
-          const newFiles = forkData.files.map((f: any) =>
-            createFile(f.fileName, f.language, f.code)
+        const forkData = JSON.parse(forkRaw) as ForkPayload;
+        localStorage.removeItem(FORK_STORAGE_KEY);
+        if (forkData && Array.isArray(forkData.files) && forkData.files.length > 0) {
+          const newFiles = importFiles(
+            forkData.files.map((f) => ({ name: f.fileName, content: f.code, languageId: f.language }))
           );
-          setFiles(newFiles);
-          setActiveFileId(newFiles[0].id);
+          commitWorkspace({
+            files: newFiles,
+            folders: foldersOf(newFiles),
+            activeFileId: newFiles[0].id,
+            openTabIds: [newFiles[0].id],
+          });
           setProjectName(forkData.name || "Forked Project");
-          localStorage.removeItem("zuup_fork_project");
-          toast.success(`Forked project loaded in Zuup Code! 🚀`);
+          setHasUnsavedChanges(true);
+          githubRef.current?.forget(SCRATCH_PROJECT_KEY);
+          autosaveBlockedRef.current = false;
+          toast.success("Forked project loaded in Zuup Code");
           return;
         }
       }
@@ -244,161 +579,255 @@ const Index = () => {
 
     const sharedCode = loadSharedCode();
     if (sharedCode) {
-      const sharedFile = createFile(
-        sharedCode.fileName,
-        sharedCode.language,
-        sharedCode.code
-      );
-      setFiles([sharedFile]);
-      setActiveFileId(sharedFile.id);
+      const [sharedFile] = importFiles([
+        { name: sharedCode.fileName, content: sharedCode.code, languageId: sharedCode.language },
+      ]);
+      commitWorkspace({ files: [sharedFile], folders: [], activeFileId: sharedFile.id, openTabIds: [sharedFile.id] });
+      setHasUnsavedChanges(true);
+      githubRef.current?.forget(SCRATCH_PROJECT_KEY);
+      autosaveBlockedRef.current = false;
       clearUrlParams();
-      toast.success(`Loaded shared code: ${sharedCode.fileName}`);
+      toast.success(`Loaded shared code: ${sharedFile.name}`);
       return;
     }
 
     const sharedProject = loadSharedProject();
     if (sharedProject) {
-      const projectFiles = sharedProject.files.map(file => 
-        createFile(file.fileName, file.language, file.code)
+      const projectFiles = importFiles(
+        sharedProject.files.map((file) => ({ name: file.fileName, content: file.code, languageId: file.language }))
       );
-      setFiles(projectFiles);
-      const mainFile = projectFiles.find(f => f.name === sharedProject.mainFileName) || projectFiles[0];
-      setActiveFileId(mainFile.id);
+      const mainFile = projectFiles.find((f) => f.name === sharedProject.mainFileName) || projectFiles[0];
+      commitWorkspace({
+        files: projectFiles,
+        folders: foldersOf(projectFiles),
+        activeFileId: mainFile?.id ?? "",
+        openTabIds: mainFile ? [mainFile.id] : [],
+      });
+      if (sharedProject.name) setProjectName(sharedProject.name);
+      setHasUnsavedChanges(true);
+      githubRef.current?.forget(SCRATCH_PROJECT_KEY);
+      autosaveBlockedRef.current = false;
       clearUrlParams();
       toast.success(`Loaded shared project: ${sharedProject.name}`, {
-        description: `${projectFiles.length} files loaded`
+        description: `${projectFiles.length} files loaded`,
       });
       return;
     }
-  }, []);
 
-  const activeFile = files.find((f) => f.id === activeFileId) || files[0] || null;
-  const activeLanguage = getLanguageById(activeFile?.languageId || "python");
-
-  const updateFileContent = useCallback((content: string) => {
-    setFiles((prev) =>
-      prev.map((f) => (f.id === activeFileId ? { ...f, content, isDirty: true } : f))
-    );
-    setHasUnsavedChanges(true);
-
-    // Auto-save to cloud after 3 seconds of inactivity
-    if (cloudProjectId && user) {
-      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
-      autoSaveTimer.current = setTimeout(() => {
-        performCloudSave();
-      }, 3000);
+    // Nothing external was found: the scratch workspace (restored or blank) is the source of truth.
+    if (!new URLSearchParams(window.location.search).get("project")) {
+      autosaveBlockedRef.current = false;
     }
-  }, [activeFileId, cloudProjectId, user]);
+  }, [commitWorkspace]);
 
-  const handleLanguageChange = useCallback((langId: string) => {
-    const lang = getLanguageById(langId);
-    setFiles((prev) =>
-      prev.map((f) =>
-        f.id === activeFileId
-          ? { ...f, languageId: langId, name: f.name.replace(/\.[^.]+$/, lang.extension) }
-          : f
-      )
-    );
-  }, [activeFileId]);
+  // ── File & folder operations ──
+  const createEmptyFile = useCallback(
+    (path: string, languageId: string): FileTab => {
+      const file = createFile(path, languageId, "");
+      if (cloudProjectIdRef.current) file.isDirty = true;
+      updateWorkspace((s) => addFile(s, file));
+      markChanged();
+      recordSnapshot(file.id, file.name, "", "Created");
+      toast.success(`Created ${path}`);
+      return file;
+    },
+    [markChanged, updateWorkspace]
+  );
 
-  const handleNewFile = useCallback((name: string, languageId: string) => {
-    const lang = getLanguageById(languageId);
-    const file = createFile(name, languageId, lang.defaultCode || "");
-    setFiles((prev) => [...prev, file]);
-    setActiveFileId(file.id);
+  const handleNewFile = useCallback(
+    (rawName: string, parentFolder: string): ActionResult => {
+      const plan = planNewFile(rawName, parentFolder, defaultLangRef.current, wsRef.current);
+      if (plan.ok === false) {
+        toast.error(plan.error);
+        return plan;
+      }
+      createEmptyFile(plan.path, plan.languageId);
+      return { ok: true };
+    },
+    [createEmptyFile]
+  );
 
-    // Auto-register parent folders if path contains slashes
-    const parts = name.split("/").filter(Boolean);
-    if (parts.length > 1) {
-      setFolders((prev) => {
-        const next = new Set(prev);
-        let p = "";
-        for (let i = 0; i < parts.length - 1; i++) {
-          p = p ? `${p}/${parts[i]}` : parts[i];
-          next.add(p);
-        }
-        return Array.from(next);
+  /** Empty-state quick pick: a blank main.<ext> (or the next free name) for the language. */
+  const handleCreateWithLanguage = useCallback(
+    (languageId: string) => {
+      const lang = getLanguageById(languageId);
+      const path = makeUniquePath(`main${lang.extension}`, wsRef.current);
+      createEmptyFile(path, detectLanguageFromFilename(path).id);
+    },
+    [createEmptyFile]
+  );
+
+  const handleCreateFolder = useCallback(
+    (rawName: string, parentFolder: string): ActionResult => {
+      const plan = planNewFolder(rawName, parentFolder, wsRef.current);
+      if (plan.ok === false) {
+        toast.error(plan.error);
+        return plan;
+      }
+      updateWorkspace((s) => ({
+        ...s,
+        folders: Array.from(new Set([...s.folders, ...plan.parentFolders, plan.path])),
+      }));
+      markChanged();
+      toast.success(`Created folder "${plan.path}"`);
+      return { ok: true };
+    },
+    [markChanged, updateWorkspace]
+  );
+
+  /** Puts previously deleted files/folders back (Undo). Name clashes get a numeric suffix. */
+  const restoreEntries = useCallback(
+    (restoredFiles: FileTab[], restoredFolders: string[], reopenIds: string[]) => {
+      let state = wsRef.current;
+      for (const file of restoredFiles) {
+        if (state.files.some((f) => f.id === file.id)) continue;
+        const name = makeUniquePath(file.name, state);
+        state = reopenIds.includes(file.id)
+          ? addFile(state, { ...file, name })
+          : appendFiles(state, [{ ...file, name }]);
+      }
+      state = { ...state, folders: Array.from(new Set([...state.folders, ...restoredFolders])) };
+      commitWorkspace(state);
+      markChanged();
+    },
+    [commitWorkspace, markChanged]
+  );
+
+  const handleDeleteFile = useCallback(
+    (id: string) => {
+      const file = wsRef.current.files.find((f) => f.id === id);
+      if (!file) return;
+      const wasOpen = wsRef.current.openTabIds.includes(id);
+      updateWorkspace((s) => removeFile(s, id));
+      markChanged();
+      toast(`Deleted ${file.name}`, {
+        duration: 8000,
+        action: { label: "Undo", onClick: () => restoreEntries([file], [], wasOpen ? [id] : []) },
       });
-    }
+    },
+    [markChanged, restoreEntries, updateWorkspace]
+  );
 
-    recordSnapshot(file.id, file.name, file.content, "Created");
-    toast.success(`Created ${name}`);
-  }, []);
+  const handleDeleteFolder = useCallback(
+    (folderPath: string) => {
+      const before = wsRef.current;
+      const removedFiles = before.files.filter((f) => f.name.startsWith(`${folderPath}/`));
+      const removedFolders = before.folders.filter((f) => f === folderPath || f.startsWith(`${folderPath}/`));
+      const reopen = removedFiles.filter((f) => before.openTabIds.includes(f.id)).map((f) => f.id);
+      updateWorkspace((s) => removeFolder(s, folderPath));
+      markChanged();
+      const count = removedFiles.length;
+      toast(`Deleted folder "${folderPath}"${count > 0 ? ` and ${count} file${count > 1 ? "s" : ""}` : ""}`, {
+        duration: 8000,
+        action: {
+          label: "Undo",
+          onClick: () => restoreEntries(removedFiles, [folderPath, ...removedFolders], reopen),
+        },
+      });
+    },
+    [markChanged, restoreEntries, updateWorkspace]
+  );
 
-  const handleCreateFolder = useCallback((folderPath: string) => {
-    setFolders((prev) => Array.from(new Set([...prev, folderPath])));
-    toast.success(`Created folder "${folderPath}"`);
-  }, []);
-
-  const handleDeleteFolder = useCallback((folderPath: string) => {
-    setFolders((prev) => prev.filter((f) => f !== folderPath && !f.startsWith(folderPath + "/")));
-    setFiles((prev) => {
-      const next = prev.filter((f) => !f.name.startsWith(folderPath + "/"));
-      if (next.length === 0) {
-        const fallback = createFile("main.py", "python", "print('Hello Zuup!')");
-        setActiveFileId(fallback.id);
-        return [fallback];
+  const handleRenameFile = useCallback(
+    (id: string, newName: string): ActionResult => {
+      const plan = planFileRename(id, newName, wsRef.current);
+      if (plan.ok === false) {
+        toast.error(plan.error);
+        return plan;
       }
-      return next;
-    });
-    toast.success(`Deleted folder "${folderPath}"`);
-  }, []);
+      if (!plan.changed) return { ok: true };
+      updateWorkspace((s) => ({
+        ...s,
+        files: s.files.map((f) =>
+          f.id === id ? { ...f, name: plan.path, languageId: detectLanguageFromFilename(plan.path).id, isDirty: true } : f
+        ),
+      }));
+      markChanged();
+      toast.success(`Renamed to ${newName}`);
+      return { ok: true };
+    },
+    [markChanged, updateWorkspace]
+  );
 
-  const handleRenameFolder = useCallback((oldPath: string, newPath: string) => {
-    setFolders((prev) => prev.map((f) => {
-      if (f === oldPath) return newPath;
-      if (f.startsWith(oldPath + "/")) return newPath + f.slice(oldPath.length);
-      return f;
-    }));
-    setFiles((prev) => prev.map((f) => {
-      if (f.name.startsWith(oldPath + "/")) {
-        return { ...f, name: newPath + f.name.slice(oldPath.length) };
+  const handleRenameFolder = useCallback(
+    (folderPath: string, newName: string): ActionResult => {
+      const plan = planFolderRename(folderPath, newName, wsRef.current);
+      if (plan.ok === false) {
+        toast.error(plan.error);
+        return plan;
       }
-      return f;
-    }));
-    toast.success(`Renamed folder to "${newPath}"`);
-  }, []);
+      if (!plan.changed) return { ok: true };
+      updateWorkspace((s) => renameFolder(s, folderPath, plan.path));
+      markChanged();
+      toast.success(`Renamed folder to "${newName}"`);
+      return { ok: true };
+    },
+    [markChanged, updateWorkspace]
+  );
 
-  const handleDeleteFile = useCallback((id: string) => {
-    setFiles((prev) => {
-      if (prev.length <= 1) {
-        toast.error("Cannot delete the only file in project");
-        return prev;
-      }
-      const fileToDelete = prev.find((f) => f.id === id);
-      const next = prev.filter((f) => f.id !== id);
-      if (activeFileId === id) {
-        setActiveFileId(next[next.length - 1].id);
-      }
-      toast.success(`Deleted ${fileToDelete?.name || "file"}`);
-      return next;
-    });
-    setHasUnsavedChanges(true);
-  }, [activeFileId]);
+  const handleSelectFile = useCallback((id: string) => updateWorkspace((s) => openFile(s, id)), [updateWorkspace]);
+  const handleCloseTab = useCallback((id: string) => updateWorkspace((s) => closeTab(s, id)), [updateWorkspace]);
 
-  const handleRenameFile = useCallback((id: string, newName: string) => {
-    const ext = newName.includes(".") ? `.${newName.split(".").pop()?.toLowerCase()}` : "";
-    const lang = languages.find((l) => l.extension === ext);
-    setFiles((prev) =>
-      prev.map((f) => {
-        if (f.id === id) {
-          return {
-            ...f,
-            name: newName,
-            languageId: lang ? lang.id : f.languageId,
-            isDirty: true,
-          };
+  const updateFileContent = useCallback(
+    (content: string) => {
+      const id = wsRef.current.activeFileId;
+      const current = wsRef.current.files.find((f) => f.id === id);
+      if (!current || current.content === content) return;
+      updateWorkspace((s) => ({
+        ...s,
+        files: s.files.map((f) => (f.id === id ? { ...f, content, isDirty: true } : f)),
+      }));
+      markChanged();
+    },
+    [markChanged, updateWorkspace]
+  );
+
+  const handleLanguageChange = useCallback(
+    (langId: string) => {
+      const lang = getLanguageById(langId);
+      const current = wsRef.current.files.find((f) => f.id === wsRef.current.activeFileId);
+      if (!current) {
+        // No file open: the picker only chooses the language for the next new file.
+        setFallbackLangId(lang.id);
+        return;
+      }
+      if (current.languageId === lang.id) return;
+      const newPath = replaceExtension(current.name, lang.extension);
+      if (newPath !== current.name) {
+        const conflict = findPathConflict(newPath, wsRef.current, { kind: "file", ignoreFileId: current.id });
+        if (conflict) {
+          toast.error(`Can't switch to ${lang.label}`, { description: conflict });
+          return;
         }
-        return f;
-      })
-    );
-    setHasUnsavedChanges(true);
-    toast.success(`Renamed file to ${newName}`);
-  }, []);
+      }
+      updateWorkspace((s) => ({
+        ...s,
+        files: s.files.map((f) => (f.id === current.id ? { ...f, languageId: lang.id, name: newPath, isDirty: true } : f)),
+      }));
+      markChanged();
+    },
+    [markChanged, updateWorkspace]
+  );
+
+  // Upload files into the current workspace
+  const handleUploadFiles = useCallback(
+    (uploaded: { name: string; content: string }[]) => {
+      const created = importFiles(uploaded, wsRef.current);
+      if (created.length === 0) return;
+      if (cloudProjectIdRef.current) created.forEach((f) => { f.isDirty = true; });
+      updateWorkspace((s) => addFiles(s, created));
+      markChanged();
+      toast.success(`Added ${created.length} file${created.length > 1 ? "s" : ""}`);
+    },
+    [markChanged, updateWorkspace]
+  );
 
   const handleRestoreSnapshot = useCallback(
     (content: string) => {
-      if (!activeFile) return;
+      if (!activeFile) {
+        toast.error("Open a file to restore a version into it.");
+        return;
+      }
       updateFileContent(content);
       recordSnapshot(activeFile.id, activeFile.name, content, "Restored");
       toast.success(`Restored version of ${activeFile.name}`);
@@ -406,121 +835,63 @@ const Index = () => {
     [activeFile, updateFileContent]
   );
 
-  const handleNewProject = useCallback(async (data: NewProjectData) => {
-    let projectFiles: FileTab[] = [];
-
-    if (data.template) {
-      // From template
-      projectFiles = data.template.files.map(file => {
-        const fileName = file.path === "/" ? file.fileName : `${file.path.replace(/\/$/, "")}/${file.fileName}`;
-        return createFile(fileName, file.language, file.content);
-      });
-    } else if (data.uploadedFiles.length > 0) {
-      // From uploaded files
-      projectFiles = data.uploadedFiles.map(file => {
-        const ext = file.name.split(".").pop()?.toLowerCase() || "";
-        const lang = languages.find(l => l.extension === `.${ext}`)?.id || data.language;
-        return createFile(file.name, lang, file.content);
-      });
-    } else {
-      // Blank project for the selected language
-      const selectedLang = getLanguageById(data.language);
-      const defaultFileName = `main${selectedLang.extension}`;
-      projectFiles = [
-        createFile(defaultFileName, selectedLang.id, selectedLang.defaultCode)
-      ];
-    }
-
-    const mainFile = data.template
-      ? projectFiles.find(f => f.name.includes(data.template!.mainFile)) || projectFiles[0]
-      : projectFiles[0];
-
-    setFiles(projectFiles);
-    setActiveFileId(mainFile?.id || "");
-    setProjectName(data.name);
-
-    // Save to cloud immediately if signed in
-    if (user) {
-      const fileData = projectFiles.map(f => ({
-        name: f.name,
-        language: f.languageId,
-        content: f.content,
-      }));
-      const saved = await createProject(data.name, data.description, data.language, fileData);
-      if (saved) {
-        setCloudProjectId(saved.id);
-        toast.success(`Created "${data.name}" — saved to cloud ☁️`);
+  const handleNewProject = useCallback(
+    async (data: NewProjectData) => {
+      let projectFiles: FileTab[];
+      if (data.uploadedFiles.length > 0) {
+        projectFiles = importFiles(data.uploadedFiles);
       } else {
-        toast.success(`Created "${data.name}"`, { description: "Could not save to cloud" });
+        // Blank project: one empty main.<ext>, no demo code.
+        const lang = getLanguageById(data.language);
+        projectFiles = [createFile(`main${lang.extension}`, lang.id, "")];
       }
-    } else {
-      toast.success(`Created "${data.name}"`, {
-        description: "Sign in to save to cloud",
+      const first = projectFiles[0];
+
+      // The new project replaces the scratch workspace and any open cloud project.
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+      pendingSaveRef.current = false;
+      loadedProjectIdRef.current = null;
+      setCloudProject(null);
+      syncProjectParam(null);
+      commitWorkspace({
+        files: projectFiles,
+        folders: foldersOf(projectFiles),
+        activeFileId: first?.id ?? "",
+        openTabIds: first ? [first.id] : [],
       });
-    }
-    setHasUnsavedChanges(false);
-  }, [user]);
+      setProjectName(data.name);
+      projectNameRef.current = data.name;
+      setHasUnsavedChanges(false);
+      setTerminalExternalLines([]);
+      clearWorkspace();
+      githubRef.current?.forget(SCRATCH_PROJECT_KEY);
 
-  const handleCloseFile = useCallback((id: string) => {
-    setFiles((prev) => {
-      const next = prev.filter((f) => f.id !== id);
-      if (next.length === 0) {
-        setActiveFileId("");
-        return [];
-      }
-      if (activeFileId === id) {
-        setActiveFileId(next[next.length - 1].id);
-      }
-      return next;
-    });
-  }, [activeFileId]);
-
-  const performCloudSave = useCallback(async () => {
-    if (!user || isSavingRef.current) return;
-    setIsSaving(true);
-    // Read latest state from refs to avoid stale closure
-    const currentFiles = filesRef.current;
-    const currentCloudId = cloudProjectIdRef.current;
-    const currentProjectName = projectNameRef.current;
-    const projectFiles = currentFiles.map((f) => ({
-      name: f.name,
-      language: f.languageId,
-      content: f.content,
-    }));
-    const primaryLang = currentFiles[0]?.languageId || "python";
-    try {
-      if (currentCloudId) {
-        const updated = await updateProject(currentCloudId, {
-          files: projectFiles,
-          language: primaryLang,
-        });
-        if (updated) {
-          setHasUnsavedChanges(false);
-          setFiles(prev => prev.map(f => ({ ...f, isDirty: false })));
-          toast.success("Saved to cloud ☁️");
+      // Save to cloud immediately if signed in
+      if (userRef.current) {
+        const saved = await createProject(
+          data.name,
+          data.description,
+          data.language,
+          projectFiles.map((f) => ({ name: f.name, language: f.languageId, content: f.content }))
+        );
+        if (saved) {
+          loadedProjectIdRef.current = saved.id;
+          setCloudProject(saved.id);
+          clearWorkspace();
+          syncProjectParam(saved.id);
+          toast.success(`Created "${data.name}" and saved to the cloud`);
         } else {
-          toast.error("Failed to save — check console");
+          toast.success(`Created "${data.name}"`, { description: "Could not save to cloud" });
         }
       } else {
-        const name = currentProjectName || currentFiles[0]?.name || "Untitled";
-        const created = await createProject(name, "", primaryLang, projectFiles);
-        if (created) {
-          setCloudProjectId(created.id);
-          setProjectName(created.name);
-          setHasUnsavedChanges(false);
-          setFiles(prev => prev.map(f => ({ ...f, isDirty: false })));
-          toast.success("Project saved to cloud ☁️");
-        }
+        toast.success(`Created "${data.name}"`, { description: "Sign in to save to cloud" });
       }
-    } catch (err) {
-      console.error("Cloud save error:", err);
-      toast.error("Error saving to cloud");
-    }
-    setIsSaving(false);
-  }, [user]);
+    },
+    [commitWorkspace, setCloudProject, syncProjectParam]
+  );
 
   const handleSave = useCallback(() => {
-    if (!user) {
+    if (!userRef.current) {
       toast.error("You must be logged in with your Zuup Account to save code.", {
         action: {
           label: "Sign in with Zuup",
@@ -529,226 +900,184 @@ const Index = () => {
       });
       return;
     }
-    if (!activeFile) return;
-    setFiles((prev) => prev.map((f) => (f.id === activeFileId ? { ...f, isDirty: false } : f)));
-    recordSnapshot(activeFile.id, activeFile.name, activeFile.content, "Saved");
-    performCloudSave();
-  }, [activeFileId, activeFile?.name, activeFile?.content, user, signInWithZuup, performCloudSave]);
-
-  // Upload files into current project
-  const handleUploadFiles = useCallback((uploadedFiles: { name: string; content: string }[]) => {
-    const newFiles = uploadedFiles.map(f => {
-      const ext = f.name.split(".").pop()?.toLowerCase() || "";
-      const lang = languages.find(l => l.extension === `.${ext}`)?.id || activeFile?.languageId || "python";
-      return createFile(f.name, lang, f.content);
-    });
-    setFiles(prev => [...prev, ...newFiles]);
-    if (newFiles.length > 0) setActiveFileId(newFiles[0].id);
-    setHasUnsavedChanges(true);
-    toast.success(`Added ${newFiles.length} file${newFiles.length > 1 ? "s" : ""}`);
-  }, [activeFile?.languageId]);
+    if (wsRef.current.files.length === 0 && !cloudProjectIdRef.current) {
+      toast.info("Nothing to save yet", { description: "Create a file first." });
+      return;
+    }
+    const current = wsRef.current.files.find((f) => f.id === wsRef.current.activeFileId);
+    if (current) recordSnapshot(current.id, current.name, current.content, "Saved");
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    void performCloudSave();
+  }, [signInWithZuup, performCloudSave]);
 
   const handleDownload = useCallback(() => {
-    if (!activeFile) return;
+    if (!activeFile) {
+      toast.info("Open a file to download it.");
+      return;
+    }
     downloadFile(activeFile.name, activeFile.content);
     toast.success(`Downloaded ${activeFile.name}`);
   }, [activeFile]);
 
   const handleShare = useCallback(() => {
+    if (!activeFile) {
+      toast.info("Open a file to share it.");
+      return;
+    }
     setShareModalOpen(true);
-  }, []);
+  }, [activeFile]);
 
-  const handleRun = useCallback(async (customStdin?: unknown) => {
-    if (!activeFile) return;
-
-    if (activeFile.languageId === "html" || activeFile.languageId === "css") {
-      setTerminalExternalLines([{ text: "[OK] Rendered in preview panel.", type: "success" }]);
-      return;
-    }
-
-    // Safely check if customStdin is an actual string (prevents React MouseEvent crash!)
-    const stdinArg: string | undefined = typeof customStdin === "string" ? customStdin : undefined;
-
-    const needsStdin = detectNeedsStdin(activeFile.content, activeFile.languageId);
-
-    // If program expects input and none was provided yet, prompt directly in the terminal!
-    if (needsStdin && stdinArg === undefined && !(programStdin || "").trim()) {
-      setTerminalExternalLines([
-        { text: `▶ Running ${activeFile.name} (${activeLanguage.label})…`, type: "info" },
-        { text: "⌨ Program waiting for input (scanf / input()).", type: "info" },
-        { text: "Type your input below and press Enter to execute (or Shift+Enter for multiline):", type: "stdin-prompt" },
-      ]);
-      setStdinRequestTrigger(Date.now());
-      return;
-    }
-
-    setIsRunning(true);
-    const activeStdin = stdinArg !== undefined ? stdinArg : (typeof programStdin === "string" ? programStdin : "");
-    const initialLines: { text: string; type: "output" | "error" | "success" | "info" | "prompt" | "stdin-prompt" }[] = [
-      { text: `▶ Running ${activeFile.name} (${activeLanguage.label})…`, type: "info" }
-    ];
-    if (activeStdin.trim()) {
-      initialLines.push({
-        text: `📥 Input: ${activeStdin.trim().replace(/\n/g, " ")}`,
-        type: "stdin-prompt",
+  /** Adds files the program created (found by scanning code/output) without stealing focus. */
+  const addCreatedFiles = useCallback(
+    (created: { name: string; langId: string; content: string }[]) => {
+      const fresh = created.filter(
+        (cf) => validateEntryName(cf.name).ok && !findPathConflict(cf.name, wsRef.current, { kind: "file" })
+      );
+      if (fresh.length === 0) return;
+      const newFiles = fresh.map((cf) => {
+        const file = createFile(cf.name, cf.langId, cf.content);
+        if (cloudProjectIdRef.current) file.isDirty = true;
+        return file;
       });
-    }
-    setTerminalExternalLines(initialLines);
+      updateWorkspace((s) => appendFiles(s, newFiles));
+      markChanged();
+      toast.success(
+        `${newFiles.length === 1 ? `"${newFiles[0].name}"` : `${newFiles.length} files`} added to Explorer`,
+        { description: "Created by your code" }
+      );
+    },
+    [markChanged, updateWorkspace]
+  );
 
-    // Record snapshot on execution
-    recordSnapshot(activeFile.id, activeFile.name, activeFile.content, "Code Run");
+  /** Runs the active file and streams the result into the terminal. */
+  const executeActiveFile = useCallback(
+    async (stdin?: string) => {
+      if (!activeFile) return;
+      const lang = getLanguageById(activeFile.languageId);
 
-    try {
-      if (activeLanguage.pistonLang) {
-        const stdinToPass = activeStdin.trim() ? activeStdin : undefined;
-        const result = await executeCode(activeLanguage.pistonLang, activeLanguage.pistonVersion, activeFile.content, stdinToPass);
-        const resultLines: { text: string; type: "output" | "error" | "success" | "info" | "prompt" | "stdin-prompt" }[] = [
-          ...result.output.flatMap((line) =>
-            line.split("\n").map((l) => ({
-              text: l,
-              type: (l.startsWith("❌") || l.toLowerCase().includes("error") || l.toLowerCase().includes("traceback")
-                ? "error" : "output") as "output" | "error",
-            }))
-          ),
-          { text: "", type: "output" },
-          { text: result.success ? "✅ Execution completed." : "❌ Execution failed.", type: result.success ? "success" : "error" },
-        ];
+      setIsRunning(true);
+      const initialLines: TerminalLine[] = [{ text: `▶ Running ${activeFile.name} (${lang.label})…`, type: "info" }];
+      if (stdin && stdin.trim()) {
+        initialLines.push({ text: `📥 Input: ${stdin.trim().replace(/\n/g, " ")}`, type: "stdin-prompt" });
+      }
+      setTerminalExternalLines(initialLines);
+
+      // Record snapshot on execution
+      recordSnapshot(activeFile.id, activeFile.name, activeFile.content, "Code Run");
+
+      try {
+        if (!lang.pistonLang) {
+          setTerminalExternalLines([
+            { text: `[WARN] ${lang.label} can't be run here. It is available for editing and syntax highlighting only.`, type: "info" },
+          ]);
+          return;
+        }
+        const stdinToPass = stdin && stdin.trim() ? stdin : undefined;
+        const result = await executeCode(lang.pistonLang, lang.pistonVersion, activeFile.content, stdinToPass);
+        const resultLines = toResultLines(result.output, result.success);
 
         // If program failed due to EOF / missing input, prompt in terminal to re-run:
-        if (!stdinToPass && result.output.some(l => l.includes("EOFError") || l.includes("EOF") || l.includes("NoSuchElementException"))) {
+        if (!stdinToPass && result.output.some((l) => l.includes("EOFError") || l.includes("EOF") || l.includes("NoSuchElementException"))) {
           resultLines.push({
             text: "💡 Program halted waiting for input. Type input below and press Enter to re-run:",
             type: "stdin-prompt",
           });
           setStdinRequestTrigger(Date.now());
         }
-
         setTerminalExternalLines(resultLines);
 
         if (result.success) {
-          const created = detectCreatedFiles(activeFile.content, activeFile.languageId, result.output);
-          if (created.length > 0) {
-            setFiles((prev) => {
-              let updated = [...prev];
-              const added: string[] = [];
-              for (const cf of created) {
-                if (!updated.find((f) => f.name === cf.name)) {
-                  updated = [...updated, createFile(cf.name, cf.langId, "")];
-                  added.push(cf.name);
-                }
-              }
-              if (added.length > 0) {
-                toast.success(
-                  `📄 ${added.length === 1 ? `"${added[0]}"` : `${added.length} files`} added to Explorer`,
-                  { description: "Created by your code" }
-                );
-              }
-              return updated;
-            });
-            setHasUnsavedChanges(true);
-          }
+          addCreatedFiles(detectCreatedFiles(activeFile.content, activeFile.languageId, result.output));
         }
-      } else {
-        setTerminalExternalLines([{ text: "[WARN] No runtime available for this language.", type: "info" }]);
+      } catch (err) {
+        console.error("Execution error:", err);
+        const message = err instanceof Error ? err.message : "";
+        setTerminalExternalLines([
+          { text: `❌ Execution error: ${message || "Failed to contact execution server"}`, type: "error" },
+          { text: "Check your internet connection or try again.", type: "info" },
+        ]);
+      } finally {
+        setIsRunning(false);
       }
-    } catch (err: any) {
-      console.error("Execution error:", err);
-      setTerminalExternalLines([
-        { text: `❌ Execution error: ${err?.message || "Failed to contact execution server"}`, type: "error" },
-        { text: "Check your internet connection or try again.", type: "info" },
-      ]);
-    } finally {
-      setIsRunning(false);
-    }
-  }, [activeLanguage, activeFile, programStdin]);
+    },
+    [activeFile, addCreatedFiles]
+  );
+
+  const handleRun = useCallback(
+    async (customStdin?: unknown) => {
+      if (!activeFile) {
+        toast.info("Create or open a file to run it.");
+        return;
+      }
+      if (isRunning) return;
+
+      if (activeFile.languageId === "html" || activeFile.languageId === "css") {
+        setTerminalExternalLines([{ text: "[OK] Rendered in preview panel.", type: "success" }]);
+        return;
+      }
+
+      // Safely check if customStdin is an actual string (prevents React MouseEvent crash!)
+      const stdinArg: string | undefined = typeof customStdin === "string" ? customStdin : undefined;
+      const lang = getLanguageById(activeFile.languageId);
+      const needsStdin = detectNeedsStdin(activeFile.content, activeFile.languageId);
+
+      // If program expects input and none was provided yet, prompt directly in the terminal!
+      if (needsStdin && stdinArg === undefined && !programStdin.trim()) {
+        setTerminalExternalLines([
+          { text: `▶ Running ${activeFile.name} (${lang.label})…`, type: "info" },
+          { text: "⌨ Program waiting for input (scanf / input()).", type: "info" },
+          { text: "Type your input below and press Enter to execute (or Shift+Enter for multiline):", type: "stdin-prompt" },
+        ]);
+        setStdinRequestTrigger(Date.now());
+        return;
+      }
+
+      await executeActiveFile(stdinArg !== undefined ? stdinArg : programStdin);
+    },
+    [activeFile, isRunning, programStdin, executeActiveFile]
+  );
 
   const handleClearOutput = useCallback(() => {
     setTerminalExternalLines([{ text: "Terminal cleared.", type: "info" }]);
   }, []);
 
-  const handleTerminalCommand = useCallback(async (cmd: string) => {
-    // Helper: run code and push results into terminal lines
-    const runInTerminal = async (code: string, stdin?: string) => {
-      if (!activeFile || !activeLanguage?.pistonLang) {
-        setTerminalExternalLines([{ text: "❌ No active file to run, or language has no runtime.", type: "error" }]);
+  const handleTerminalCommand = useCallback(
+    async (cmd: string) => {
+      if (!activeFile) {
+        setTerminalExternalLines([{ text: "❌ No file is open. Create or open a file first.", type: "error" }]);
         return;
       }
-      setIsRunning(true);
-      setTerminalExternalLines([
-        { text: `▶ Running ${activeFile.name} (${activeLanguage.label})…`, type: "info" },
-      ]);
 
-      const result = await executeCode(activeLanguage.pistonLang, activeLanguage.pistonVersion, code, stdin);
-      const resultLines: { text: string; type: "output" | "error" | "success" | "info" | "prompt" | "stdin-prompt" }[] = [
-        ...result.output.flatMap((line) =>
-          line.split("\n").map((l) => ({
-            text: l,
-            type: (l.startsWith("❌") || l.toLowerCase().includes("error") || l.toLowerCase().includes("traceback")
-              ? "error"
-              : "output") as "output" | "error",
-          }))
-        ),
-        { text: "", type: "output" },
-        {
-          text: result.success ? "✅ Execution completed." : "❌ Execution failed.",
-          type: result.success ? "success" : "error",
-        },
-      ];
-      setTerminalExternalLines(resultLines);
-
-      // ── Auto-add files created by the program to the Explorer ──
-      if (result.success) {
-        const created = detectCreatedFiles(activeFile.content, activeFile.languageId, result.output);
-        if (created.length > 0) {
-          setFiles((prev) => {
-            let updated = [...prev];
-            const added: string[] = [];
-            for (const cf of created) {
-              if (!updated.find((f) => f.name === cf.name)) {
-                updated = [...updated, createFile(cf.name, cf.langId, cf.content)];
-                added.push(cf.name);
-              }
-            }
-            if (added.length > 0) {
-              toast.success(
-                `📄 ${added.length === 1 ? `"${added[0]}"` : `${added.length} files`} added to Explorer`,
-                { description: "Created by your code" }
-              );
-            }
-            return updated;
-          });
-          setHasUnsavedChanges(true);
+      // Plain "run" — run the active file, output stays in Terminal tab
+      if (cmd === "run") {
+        // HTML/CSS: just show a note
+        if (activeFile.languageId === "html" || activeFile.languageId === "css") {
+          setTerminalExternalLines([{ text: "[OK] Rendered in preview panel.", type: "success" }]);
+          return;
         }
-      }
-
-      setIsRunning(false);
-    };
-
-    // Plain "run" — run the active file, output stays in Terminal tab
-    if (cmd === "run") {
-      if (!activeFile) return;
-      // HTML/CSS: just show a note
-      if (activeFile.languageId === "html" || activeFile.languageId === "css") {
-        setTerminalExternalLines([{ text: "[OK] Rendered in preview panel.", type: "success" }]);
+        await executeActiveFile();
         return;
       }
-      await runInTerminal(activeFile.content);
-      return;
-    }
 
-    // "run-with-stdin:<b64stdin>" — execute active file with captured stdin
-    if (cmd.startsWith("run-with-stdin:")) {
-      if (!activeFile || !activeLanguage?.pistonLang) {
-        setTerminalExternalLines([{ text: "❌ No active file to run, or language has no runtime.", type: "error" }]);
-        return;
+      // "run-with-stdin:<b64stdin>" — execute active file with captured stdin
+      if (cmd.startsWith("run-with-stdin:")) {
+        if (!getLanguageById(activeFile.languageId).pistonLang) {
+          setTerminalExternalLines([{ text: "❌ This language has no runtime here.", type: "error" }]);
+          return;
+        }
+        const b64stdin = cmd.slice("run-with-stdin:".length);
+        let stdin = "";
+        try {
+          stdin = decodeURIComponent(escape(atob(b64stdin)));
+        } catch {
+          stdin = b64stdin;
+        }
+        setProgramStdin(stdin);
+        await executeActiveFile(stdin);
       }
-      const b64stdin = cmd.slice("run-with-stdin:".length);
-      let stdin = "";
-      try { stdin = decodeURIComponent(escape(atob(b64stdin))); } catch { stdin = b64stdin; }
-      setProgramStdin(stdin);
-      await runInTerminal(activeFile.content, stdin);
-    }
-  }, [activeFile, activeLanguage]);
+    },
+    [activeFile, executeActiveFile]
+  );
 
   const handleActivityTabChange = (tab: SidebarTab) => {
     if (activeSidebarTab === tab && sidebarOpen) {
@@ -759,35 +1088,50 @@ const Index = () => {
     }
   };
 
+  // Stable wrappers handed to the editor so its keybindings never call stale handlers.
+  const latest = useRef({ handleSave, handleDownload, handleRun, requestNewFile });
+  latest.current = { handleSave, handleDownload, handleRun, requestNewFile };
+  const editorRun = useCallback(() => void latest.current.handleRun(), []);
+  const editorSave = useCallback(() => latest.current.handleSave(), []);
+
   // Global keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const ctrl = e.ctrlKey || e.metaKey;
-      if (ctrl && e.key === "s" && !e.shiftKey) {
+      const key = e.key.toLowerCase();
+      if (ctrl && !e.altKey && key === "s") {
         e.preventDefault();
-        handleSave();
-      } else if (ctrl && e.key === "s" && e.shiftKey) {
+        if (e.shiftKey) latest.current.handleDownload();
+        else latest.current.handleSave();
+      } else if (ctrl && key === "enter") {
         e.preventDefault();
-        handleDownload();
-      } else if (ctrl && e.key === "Enter") {
+        void latest.current.handleRun();
+      } else if (ctrl && !e.altKey && key === "n") {
+        // Browsers reserve Ctrl/Cmd+N; Alt+N below always works.
         e.preventDefault();
-        handleRun();
-      } else if (ctrl && e.key === "n" && !e.shiftKey) {
+        if (e.shiftKey) setNewProjectOpen(true);
+        else latest.current.requestNewFile();
+      } else if (e.altKey && !ctrl && e.code === "KeyN") {
         e.preventDefault();
-        setInlineCreateTrigger(Date.now());
-        setSidebarOpen(true);
-        setActiveSidebarTab("explorer");
-      } else if (ctrl && e.key === "N" && e.shiftKey) {
-        e.preventDefault();
-        setNewProjectOpen(true);
+        if (e.shiftKey) setNewProjectOpen(true);
+        else latest.current.requestNewFile();
       } else if (ctrl && e.key === "/") {
         e.preventDefault();
-        setShortcutsOpen(prev => !prev);
+        setShortcutsOpen((prev) => !prev);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleSave, handleDownload, handleRun]);
+  }, []);
+
+  useEffect(() => {
+    if (!shortcutsOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShortcutsOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [shortcutsOpen]);
 
   const showHtmlPreview = activeFile?.languageId === "html" || activeFile?.languageId === "css";
 
@@ -803,16 +1147,13 @@ const Index = () => {
       <TopBar
         activeLanguage={activeLanguage}
         activeFileName={activeFile?.name || ""}
+        hasActiveFile={!!activeFile}
         projectName={projectName}
-        onRun={() => handleRun()}
+        onRun={() => void handleRun()}
         onSave={handleSave}
         onDownload={handleDownload}
         onShare={handleShare}
-        onNewFile={() => {
-          setInlineCreateTrigger(Date.now());
-          setSidebarOpen(true);
-          setActiveSidebarTab("explorer");
-        }}
+        onNewFile={requestNewFile}
         onNewProject={() => setNewProjectOpen(true)}
         onLanguageChange={handleLanguageChange}
         isRunning={isRunning}
@@ -821,7 +1162,7 @@ const Index = () => {
         isSaving={isSaving}
         hasUnsavedChanges={hasUnsavedChanges}
         isCloudProject={!!cloudProjectId}
-        onToggleShortcuts={() => setShortcutsOpen(prev => !prev)}
+        onToggleShortcuts={() => setShortcutsOpen((prev) => !prev)}
       />
 
       <div className="flex flex-1 overflow-hidden z-10">
@@ -831,6 +1172,7 @@ const Index = () => {
           sidebarOpen={sidebarOpen}
           onTabChange={handleActivityTabChange}
           onOpenSettings={() => setSettingsOpen(true)}
+          onOpenGitHub={() => github.setDialogOpen(true)}
           user={user}
           profile={profile}
         />
@@ -845,7 +1187,8 @@ const Index = () => {
             hasUnsavedChanges={hasUnsavedChanges}
             activeTab={activeSidebarTab}
             folders={folders}
-            onSelectFile={setActiveFileId}
+            defaultLanguageId={defaultLanguageId}
+            onSelectFile={handleSelectFile}
             onCreateFile={handleNewFile}
             onDeleteFile={handleDeleteFile}
             onRenameFile={handleRenameFile}
@@ -861,47 +1204,24 @@ const Index = () => {
 
         <PanelGroup direction="vertical" className="flex-1">
           <Panel defaultSize={65} minSize={30}>
-            {files.length === 0 ? (
-              <div className="flex h-full items-center justify-center bg-background/50 backdrop-blur-xl">
-                <div className="text-center space-y-5 max-w-xs">
-                  <div className="mx-auto h-20 w-20 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 flex items-center justify-center shadow-lg shadow-primary/10">
-                    <FilePlus size={32} className="text-primary/80" />
-                  </div>
-                  <div className="space-y-2">
-                    <h2 className="text-base font-semibold text-foreground">No files yet</h2>
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      Create your first file to start coding
-                    </p>
-                  </div>
-                  <div className="space-y-3">
-                    <button
-                      onClick={() => {
-                        setInlineCreateTrigger(Date.now());
-                        setSidebarOpen(true);
-                        setActiveSidebarTab("explorer");
-                      }}
-                      className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:brightness-110 transition-all glow-primary-sm"
-                    >
-                      <Plus size={16} />
-                      Create New File
-                    </button>
-                    <p className="text-[10px] text-muted-foreground/50">
-                      or press{" "}
-                      <kbd className="rounded bg-secondary/80 px-1.5 py-0.5 text-[10px] font-mono border border-border/50">Ctrl+N</kbd>
-                    </p>
-                  </div>
-                </div>
-              </div>
+            {!activeFile ? (
+              <EditorEmptyState
+                variant={files.length === 0 ? "no-files" : "no-open-file"}
+                onNewFile={requestNewFile}
+                onNewProject={() => setNewProjectOpen(true)}
+                onCreateWithLanguage={handleCreateWithLanguage}
+                onUploadFiles={handleUploadFiles}
+              />
             ) : (
               <div className="flex h-full flex-col">
                 <FileTabs
-                  files={files}
+                  files={tabFiles}
                   activeFileId={activeFileId}
-                  onSelectFile={setActiveFileId}
-                  onCloseFile={handleCloseFile}
+                  onSelectFile={handleSelectFile}
+                  onCloseFile={handleCloseTab}
                 />
                 <Breadcrumbs
-                  activeFilePath={activeFile?.name || ""}
+                  activeFilePath={activeFile.name}
                   projectName={projectName || "zuup-project"}
                   isRunning={isRunning}
                   onNavigateFolder={() => {
@@ -912,11 +1232,13 @@ const Index = () => {
                 <div className="flex-1 overflow-hidden">
                   <CodeEditor
                     language={activeLanguage.monacoId}
-                    value={activeFile?.content || ""}
+                    value={activeFile.content}
                     onChange={updateFileContent}
-                    fontSize={fontSize}
-                    onFontSizeChange={setFontSize}
                     onCursorChange={setCursorPosition}
+                    filePath={activeFile.id}
+                    onRun={editorRun}
+                    onSave={editorSave}
+                    liveFileIds={liveFileIds}
                   />
                 </div>
               </div>
@@ -937,6 +1259,7 @@ const Index = () => {
                     isRunning={isRunning}
                     fileContent={activeFile?.content ?? ""}
                     fileLang={activeFile?.languageId ?? ""}
+                    hasActiveFile={!!activeFile}
                     externalLines={terminalExternalLines}
                     requestStdin={stdinRequestTrigger}
                   />
@@ -945,7 +1268,7 @@ const Index = () => {
                   <div className="w-0.5 h-8 rounded-full bg-muted-foreground/30" />
                 </PanelResizeHandle>
                 <Panel defaultSize={50} minSize={20}>
-                  <HtmlPreview code={activeFile?.content || ""} />
+                  <HtmlPreview code={activeFile?.content ?? ""} />
                 </Panel>
               </PanelGroup>
             ) : (
@@ -955,6 +1278,7 @@ const Index = () => {
                 isRunning={isRunning}
                 fileContent={activeFile?.content ?? ""}
                 fileLang={activeFile?.languageId ?? ""}
+                hasActiveFile={!!activeFile}
                 externalLines={terminalExternalLines}
                 requestStdin={stdinRequestTrigger}
               />
@@ -966,35 +1290,25 @@ const Index = () => {
       {/* VS Code Bottom Status Bar */}
       <StatusBar
         cursorPosition={cursorPosition}
-        tabSize={tabSize}
+        tabSize={settings.tabSize}
         languageLabel={activeLanguage.label}
         isCloudProject={!!cloudProjectId}
         isSaving={isSaving}
         hasUnsavedChanges={hasUnsavedChanges}
         onLanguageClick={() => setSettingsOpen(true)}
+        githubStatus={<SyncStatusIndicator sync={github} />}
       />
 
-      <SettingsModal
-        isOpen={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        fontSize={fontSize}
-        onFontSizeChange={setFontSize}
-        tabSize={tabSize}
-        onTabSizeChange={setTabSize}
-        wordWrap={wordWrap}
-        onWordWrapChange={setWordWrap}
-      />
+      <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
 
-      <NewFileModal
-        isOpen={newFileOpen}
-        onClose={() => setNewFileOpen(false)}
-        onCreateFile={handleNewFile}
-      />
+      <GitHubDialog sync={github} projectName={projectName} fileCount={files.length} />
+      <ConflictDialog sync={github} />
 
       <NewProjectModal
         isOpen={newProjectOpen}
         onClose={() => setNewProjectOpen(false)}
         onCreateProject={handleNewProject}
+        defaultLanguage={defaultLanguageId}
       />
 
       <ShareModal
@@ -1002,29 +1316,37 @@ const Index = () => {
         onClose={() => setShareModalOpen(false)}
         fileName={activeFile?.name || ""}
         code={activeFile?.content || ""}
-        language={activeFile?.languageId || "python"}
+        language={activeFile?.languageId || "plaintext"}
         projectName={projectName}
-        allFiles={files.map(f => ({
+        allFiles={files.map((f) => ({
           fileName: f.name,
           code: f.content,
-          language: f.languageId
+          language: f.languageId,
         }))}
       />
 
       {/* Keyboard Shortcuts Overlay */}
       {shortcutsOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShortcutsOpen(false)} />
-          <div className="relative z-10 w-full max-w-sm rounded-xl glass-strong glow-primary shadow-2xl overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShortcutsOpen(false)} aria-hidden="true" />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Keyboard shortcuts"
+            className="relative z-10 w-full max-w-sm rounded-xl glass-strong glow-primary shadow-2xl overflow-hidden"
+          >
             <div className="flex items-center justify-between border-b border-border px-5 py-3">
               <h3 className="text-sm font-semibold">Keyboard Shortcuts</h3>
-              <button onClick={() => setShortcutsOpen(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xs">
+              <button
+                onClick={() => setShortcutsOpen(false)}
+                className="text-muted-foreground hover:text-foreground transition-colors text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary rounded"
+              >
                 ESC
               </button>
             </div>
             <div className="p-4 space-y-2">
-              {SHORTCUTS.map(s => (
-                <div key={s.keys} className="flex items-center justify-between py-1.5">
+              {SHORTCUTS.map((s) => (
+                <div key={s.keys} className="flex items-center justify-between gap-3 py-1.5">
                   <span className="text-xs text-muted-foreground">{s.desc}</span>
                   <kbd className="rounded bg-secondary/80 px-2 py-0.5 text-[11px] font-mono text-foreground border border-border/50">
                     {s.keys}
@@ -1042,9 +1364,9 @@ const Index = () => {
       )}
 
       {/* Zoom indicator */}
-      {fontSize !== 14 && (
-        <div className="fixed bottom-4 right-4 z-40 rounded-lg bg-secondary/90 border border-border/50 px-3 py-1.5 text-[11px] text-muted-foreground backdrop-blur-sm">
-          Zoom: {Math.round((fontSize / 14) * 100)}%
+      {settings.fontSize !== 14 && (
+        <div className="fixed bottom-8 right-4 z-40 rounded-lg bg-secondary/90 border border-border/50 px-3 py-1.5 text-[11px] text-muted-foreground backdrop-blur-sm">
+          Zoom: {Math.round((settings.fontSize / 14) * 100)}%
         </div>
       )}
     </div>
