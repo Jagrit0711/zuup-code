@@ -79,9 +79,9 @@ export function describeSyncStatus(state: SyncState | null, options: { now?: num
 }
 
 export const TONE_CLASS: Record<SyncTone, string> = {
-  ok: "text-green-400/90",
-  busy: "text-primary",
-  warn: "text-yellow-500/90",
-  error: "text-red-400",
+  ok: "text-success",
+  busy: "text-foreground",
+  warn: "text-warning",
+  error: "text-danger",
   muted: "text-muted-foreground",
 };

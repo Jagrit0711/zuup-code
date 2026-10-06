@@ -40,8 +40,13 @@ function saveLocalProjects(projects: SavedProject[]): void {
 
 // Helper: get current auth user id
 async function currentUserId(): Promise<string | null> {
-  const { data } = await supabase.auth.getUser();
-  return data.user?.id ?? null;
+  try {
+    const { data } = await supabase.auth.getUser();
+    return data.user?.id ?? null;
+  } catch {
+    // Offline or the auth gateway is unreachable: treat as guest so local projects still work.
+    return null;
+  }
 }
 
 // ── Fetch all projects for current user ──────────────
@@ -70,14 +75,18 @@ export async function getUserProjects(): Promise<SavedProject[]> {
 
 // ── Get a single project ─────────────────────────────
 export async function getProject(id: string): Promise<SavedProject | null> {
-  const { data, error } = await supabase
-    .from("code_projects")
-    .select("*")
-    .eq("id", id)
-    .maybeSingle();
-
-  if (data && !error) {
-    return data;
+  // Local ids never exist in the cloud table (and are not valid UUIDs there).
+  if (!id.startsWith("local_")) {
+    try {
+      const { data, error } = await supabase
+        .from("code_projects")
+        .select("*")
+        .eq("id", id)
+        .maybeSingle();
+      if (data && !error) return data;
+    } catch {
+      // Offline: fall through to the local cache.
+    }
   }
 
   // Fallback to local storage
@@ -210,10 +219,25 @@ export async function deleteProject(id: string): Promise<boolean> {
 }
 
 // ── Sync local guest projects to Supabase Cloud on login ──
-export async function syncLocalProjectsToCloud(userId: string): Promise<number> {
-  const localProjects = getLocalProjects().filter((p) => p.user_id === "guest" || p.id.startsWith("local_"));
-  if (localProjects.length === 0) return 0;
+// One migration at a time: the dashboard can ask for projects twice in quick succession, and two
+// overlapping runs would insert every guest project twice.
+let syncInFlight: Promise<number> | null = null;
 
+export function syncLocalProjectsToCloud(userId: string): Promise<number> {
+  if (!syncInFlight) {
+    syncInFlight = migrateLocalProjects(userId).finally(() => {
+      syncInFlight = null;
+    });
+  }
+  return syncInFlight;
+}
+
+async function migrateLocalProjects(userId: string): Promise<number> {
+  // Guest projects, plus this user's own offline fallbacks. Another account's fallbacks on a shared
+  // device are left alone.
+  const localProjects = getLocalProjects().filter(
+    (p) => p.id.startsWith("local_") && (p.user_id === "guest" || p.user_id === userId)
+  );
   let synced = 0;
   for (const proj of localProjects) {
     try {
@@ -225,16 +249,14 @@ export async function syncLocalProjectsToCloud(userId: string): Promise<number> 
         files: proj.files,
         is_public: proj.is_public,
       });
-      if (!error) synced++;
+      if (error) continue;
+      synced++;
+      // Remove each project as soon as it is safely in the cloud, so a failure later in the loop
+      // neither loses unsynced projects nor duplicates synced ones on the next attempt.
+      saveLocalProjects(getLocalProjects().filter((p) => p.id !== proj.id));
     } catch {
-      // continue
+      // Network error: keep it locally and retry next time.
     }
-  }
-
-  // Clear migrated local projects
-  if (synced > 0) {
-    const remaining = getLocalProjects().filter((p) => !p.id.startsWith("local_"));
-    saveLocalProjects(remaining);
   }
   return synced;
 }
@@ -263,3 +285,57 @@ export async function uploadProjectAsset(
   }
 }
 
+
+// ── Fetch projects, reporting failures instead of hiding them ──
+// Unlike getUserProjects (which silently falls back to the local cache), this throws when a
+// signed-in user's projects cannot be loaded, so the dashboard can show an error with Retry.
+export class ProjectLoadError extends Error {
+  readonly offline: boolean;
+  constructor(message: string, offline: boolean) {
+    super(message);
+    this.offline = offline;
+    this.name = "ProjectLoadError";
+  }
+}
+
+export async function fetchUserProjects(): Promise<SavedProject[]> {
+  // getSession reads the stored session without a network round trip.
+  const { data: sessionData } = await supabase.auth.getSession();
+  const userId = sessionData.session?.user?.id ?? null;
+  if (!userId) return getLocalProjects();
+
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    throw new ProjectLoadError("You are offline.", true);
+  }
+
+  try {
+    await syncLocalProjectsToCloud(userId);
+  } catch {
+    // Local guest projects stay in the cache and are retried next time.
+  }
+
+  const { data, error } = await supabase
+    .from("code_projects")
+    .select("*")
+    .order("updated_at", { ascending: false });
+
+  if (error) {
+    const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+    throw new ProjectLoadError(error.message || "Could not load projects.", offline);
+  }
+  return data ?? [];
+}
+
+// ── Duplicate a project under a new name ──
+export async function duplicateProject(
+  project: SavedProject,
+  newName: string
+): Promise<SavedProject | null> {
+  return createProject(
+    newName,
+    project.description ?? "",
+    project.language,
+    (project.files ?? []).map((f) => ({ ...f })),
+    false
+  );
+}

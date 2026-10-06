@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { markBooted, shouldReloadForChunkError } from "@/lib/bootRecovery";
+import { isChunkLoadError, markBooted, shouldReloadForChunkError } from "@/lib/bootRecovery";
 
 describe("boot recovery", () => {
   beforeEach(() => {
@@ -21,5 +21,14 @@ describe("boot recovery", () => {
     expect(shouldReloadForChunkError(1_000_000, null)).toBe(true);
     expect(shouldReloadForChunkError(1_000_000, 990_000)).toBe(false);
     expect(shouldReloadForChunkError(1_000_000, 900_000)).toBe(true);
+  });
+});
+
+describe("isChunkLoadError", () => {
+  it("recognises failed lazy imports from Chrome, Firefox and Safari", () => {
+    expect(isChunkLoadError(new TypeError("Failed to fetch dynamically imported module: https://x/Index.abc.js"))).toBe(true);
+    expect(isChunkLoadError(new TypeError("error loading dynamically imported module"))).toBe(true);
+    expect(isChunkLoadError(new TypeError("Importing a module script failed."))).toBe(true);
+    expect(isChunkLoadError(new Error("Cannot read properties of undefined"))).toBe(false);
   });
 });

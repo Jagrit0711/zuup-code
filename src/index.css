@@ -6,58 +6,64 @@
 
 @layer base {
   :root {
-    --background: 230 15% 7%;
-    --foreground: 220 15% 90%;
+    /* Zuup Code workbench palette. See docs/DESIGN.md before adding colours. */
+    --ink: 228 22% 7%;        /* #0E1016 page + editor */
+    --panel: 227 19% 9%;      /* #13151C side panels */
+    --raised: 225 19% 12.5%;  /* #1A1D26 menus, inputs, hover */
+    --rule: 225 17% 18%;      /* #262A36 dividers */
+    --faint: 225 10% 40%;     /* #5C6170 tertiary text */
 
-    --card: 230 12% 10%;
-    --card-foreground: 220 15% 90%;
+    --background: var(--ink);
+    --foreground: 225 20% 92%;
 
-    --popover: 230 14% 9%;
-    --popover-foreground: 220 15% 90%;
+    --card: var(--panel);
+    --card-foreground: 225 20% 92%;
+
+    --popover: var(--raised);
+    --popover-foreground: 225 20% 92%;
 
     --primary: 345 78% 55%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 230 12% 14%;
-    --secondary-foreground: 220 15% 85%;
+    --secondary: var(--raised);
+    --secondary-foreground: 225 20% 88%;
 
-    --muted: 230 10% 16%;
-    --muted-foreground: 220 10% 55%;
+    --muted: var(--raised);
+    --muted-foreground: 226 10% 59%;
 
-    --accent: 345 78% 55%;
-    --accent-foreground: 0 0% 100%;
+    --accent: 225 17% 16%;
+    --accent-foreground: 225 20% 92%;
 
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 230 10% 18%;
-    --input: 230 10% 18%;
+    --border: var(--rule);
+    --input: var(--rule);
     --ring: 345 78% 55%;
 
-    --radius: 0.75rem;
+    --radius: 0.5rem;
 
     /* IDE-specific tokens */
-    --editor-bg: 230 15% 8%;
-    --sidebar-bg: 230 14% 9%;
-    --panel-bg: 230 12% 10%;
+    --editor-bg: var(--ink);
+    --sidebar-bg: var(--panel);
+    --panel-bg: var(--panel);
     --tab-active: 345 78% 55%;
-    --tab-inactive: 230 10% 16%;
-    --glass-bg: 230 15% 12%;
-    --glass-border: 230 10% 20%;
-    --glass-glow: 345 78% 55%;
-    --success: 142 71% 45%;
-    --warning: 38 92% 50%;
+    --tab-inactive: var(--raised);
+    --success: 147 70% 55%;
+    --warning: 38 85% 62%;
+    --danger: 0 100% 71%;
     --info: 199 89% 48%;
 
-    --sidebar-background: 230 14% 9%;
-    --sidebar-foreground: 220 15% 85%;
+    --sidebar-background: var(--panel);
+    --sidebar-foreground: 225 20% 88%;
     --sidebar-primary: 345 78% 55%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 230 12% 14%;
-    --sidebar-accent-foreground: 220 15% 85%;
-    --sidebar-border: 230 10% 18%;
+    --sidebar-accent: var(--raised);
+    --sidebar-accent-foreground: 225 20% 88%;
+    --sidebar-border: var(--rule);
     --sidebar-ring: 345 78% 55%;
   }
+
 }
 
 @layer base {
@@ -91,74 +97,9 @@
 }
 
 @layer utilities {
-  .glass {
-    background: hsl(var(--glass-bg) / 0.6);
-    backdrop-filter: blur(16px);
-    border: 1px solid hsl(var(--glass-border) / 0.4);
-  }
-  .glass-strong {
-    background: hsl(var(--glass-bg) / 0.8);
-    backdrop-filter: blur(24px);
-    border: 1px solid hsl(var(--glass-border) / 0.6);
-  }
-  .glow-primary {
-    box-shadow: 0 0 20px hsl(var(--glass-glow) / 0.15),
-                0 0 60px hsl(var(--glass-glow) / 0.05);
-  }
-  .glow-primary-sm {
-    box-shadow: 0 0 8px hsl(var(--glass-glow) / 0.2);
-  }
-  .liquid-border {
-    border: 1px solid hsl(var(--glass-border) / 0.3);
-    border-image: linear-gradient(
-      135deg,
-      hsl(var(--glass-glow) / 0.3),
-      hsl(var(--glass-border) / 0.1),
-      hsl(var(--glass-glow) / 0.2)
-    ) 1;
-  }
-
-  /* ─── Liquid Glass Elements (iOS 26 / Liquid Glass Widgets inspired) ─── */
-  .liquid-glass {
-    background: rgba(11, 14, 23, 0.72);
-    backdrop-filter: blur(28px) saturate(190%);
-    -webkit-backdrop-filter: blur(28px) saturate(190%);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.12),
-                inset 0 0 14px 0 rgba(255, 255, 255, 0.02),
-                0 8px 32px 0 rgba(0, 0, 0, 0.36);
-  }
-
-  .liquid-glass-subtle {
-    background: rgba(14, 18, 30, 0.55);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
-  }
-
-  .liquid-glass-pill {
-    background: rgba(255, 255, 255, 0.06);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.16),
-                0 2px 8px 0 rgba(0, 0, 0, 0.2);
-    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  }
-  .liquid-glass-pill:hover {
-    background: rgba(255, 255, 255, 0.1);
-    border-color: rgba(255, 255, 255, 0.2);
-    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.22),
-                0 4px 14px 0 rgba(0, 0, 0, 0.25);
-  }
-
-  .liquid-glass-tab-active {
-    background: rgba(255, 255, 255, 0.07);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.16),
-                0 2px 6px 0 rgba(0, 0, 0, 0.15);
+  /* The one shadow: only for things that float above the page (menus, dialogs, popovers). */
+  .shadow-float {
+    box-shadow: 0 16px 48px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px hsl(var(--rule));
   }
 
   /* ─── Marketing / site chrome utilities ─── */
@@ -169,48 +110,11 @@
       linear-gradient(90deg, #fff 1px, transparent 1px);
     background-size: 40px 40px;
   }
-  /* White-to-muted headline gradient. */
-  .text-gradient {
-    background-image: linear-gradient(180deg, #fff 30%, rgba(255, 255, 255, 0.55));
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-  }
   /* Visible keyboard focus for site chrome and marketing pages. */
   .focus-ring:focus-visible {
     outline: 2px solid hsl(var(--ring));
     outline-offset: 3px;
   }
 
-  /* Tree indentation guide line */
-  .tree-indent-guide {
-    position: relative;
-  }
-  .tree-indent-guide::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 8px;
-    width: 1px;
-    background-color: rgba(255, 255, 255, 0.07);
-  }
 }
 
-@keyframes liquidFloat1 {
-  0%, 100% { transform: translate(0px, 0px) scale(1); }
-  50% { transform: translate(35px, -25px) scale(1.08); }
-}
-
-@keyframes liquidFloat2 {
-  0%, 100% { transform: translate(0px, 0px) scale(1); }
-  50% { transform: translate(-25px, 35px) scale(1.06); }
-}
-
-.animate-liquid-1 {
-  animation: liquidFloat1 18s ease-in-out infinite;
-}
-
-.animate-liquid-2 {
-  animation: liquidFloat2 24s ease-in-out infinite;
-}

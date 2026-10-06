@@ -52,3 +52,13 @@ export function installChunkReloadGuard(): void {
     window.location.reload();
   });
 }
+
+/** A lazily loaded module that failed to download (usually replaced by a newer deploy). */
+export function isChunkLoadError(error: Error): boolean {
+  return (
+    error.name === "ChunkLoadError" ||
+    /dynamically imported module|Importing a module script failed|error loading dynamically imported|Failed to fetch dynamically/i.test(
+      error.message,
+    )
+  );
+}

@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from "react";
-import { AlertTriangle, ArrowLeft, Download, GitBranch, Globe, Loader2, Lock, Plus, Search, Upload } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -16,7 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { type BranchSummary, type ImportProgress, type RepoSummary, canWriteRepo, normalizeSubdir } from "@/lib/github";
 import type { GitHubSync, RepoTarget } from "@/hooks/useGitHubSync";
-import { inputClass, primaryButtonClass, secondaryButtonClass } from "./styles";
+import { inputClass, linkButtonClass, primaryButtonClass, secondaryButtonClass } from "./styles";
 
 interface LinkRepoFormProps {
   sync: GitHubSync;
@@ -175,37 +175,37 @@ const LinkRepoForm = ({ sync, fileCount, onLinked }: LinkRepoFormProps) => {
   if (mode === "create") {
     return (
       <form onSubmit={createRepo} className="space-y-3">
-        <button type="button" onClick={() => setMode("pick")} className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
-          <ArrowLeft size={12} /> Back to your repositories
+        <button type="button" onClick={() => setMode("pick")} className={linkButtonClass}>
+          Back to your repositories
         </button>
         <div className="space-y-1">
-          <label htmlFor={`${uid}-name`} className="text-xs font-medium text-foreground">
+          <label htmlFor={`${uid}-name`} className="text-[13px] font-medium text-foreground">
             Repository name
           </label>
           <input id={`${uid}-name`} value={newName} onChange={(e) => setNewName(e.target.value.trim())} placeholder="my-project" className={inputClass} autoFocus />
-          {newName && !REPO_NAME.test(newName) && <p className="text-[11px] text-red-400">Use letters, numbers, ".", "-" or "_".</p>}
+          {newName && !REPO_NAME.test(newName) && <p className="text-[12px] text-danger">Use letters, numbers, ".", "-" or "_".</p>}
         </div>
         <div className="space-y-1">
-          <label htmlFor={`${uid}-desc`} className="text-xs font-medium text-foreground">
+          <label htmlFor={`${uid}-desc`} className="text-[13px] font-medium text-foreground">
             Description <span className="text-muted-foreground">(optional)</span>
           </label>
           <input id={`${uid}-desc`} value={newDescription} onChange={(e) => setNewDescription(e.target.value)} className={inputClass} />
         </div>
         <div className="flex items-center justify-between gap-3">
-          <label htmlFor={`${uid}-private`} className="text-xs text-foreground">
+          <label htmlFor={`${uid}-private`} className="text-[13px] text-foreground">
             Private repository
           </label>
           <Switch id={`${uid}-private`} checked={newPrivate} onCheckedChange={setNewPrivate} className="h-5 w-9" />
         </div>
         {auth && newPrivate && !canWriteRepo(auth, true) && (
-          <p className="flex items-start gap-1.5 text-[11px] text-yellow-500/90">
-            <AlertTriangle size={12} className="mt-0.5 shrink-0" /> Your sign-in only covers public repositories, so syncing a private one will fail.
+          <p className="text-[12px] text-warning">
+            Your sign-in only covers public repositories, so syncing a private one will fail.
           </p>
         )}
-        <p className="text-[11px] text-muted-foreground">The repository starts with a README on its default branch.</p>
+        <p className="text-[12px] text-muted-foreground">The repository starts with a README on its default branch.</p>
         <div className="flex justify-end">
           <button type="submit" disabled={!REPO_NAME.test(newName) || creating} className={primaryButtonClass}>
-            {creating ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} Create repository
+            {creating && <Loader2 size={13} className="animate-spin motion-reduce:animate-none" />} Create repository
           </button>
         </div>
       </form>
@@ -216,26 +216,25 @@ const LinkRepoForm = ({ sync, fileCount, onLinked }: LinkRepoFormProps) => {
     const exact = OWNER_REPO.test(query.trim()) && !repos.some((r) => r.fullName.toLowerCase() === query.trim().toLowerCase());
     return (
       <div className="space-y-2.5">
-        <div className="relative">
-          <Search size={12} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+        <div>
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search your repositories or type owner/name"
             aria-label="Search repositories"
-            className={`${inputClass} pl-7`}
+            className={inputClass}
             autoFocus
           />
         </div>
-        <div className="max-h-56 overflow-y-auto rounded border border-border/60" role="listbox" aria-label="Repositories">
+        <div className="max-h-56 overflow-y-auto border-y border-rule" role="listbox" aria-label="Repositories">
           {loadingRepos && repos.length === 0 ? (
-            <div className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
-              <Loader2 size={13} className="animate-spin" /> Loading repositories…
+            <div className="flex items-center gap-2 py-3 text-[13px] text-muted-foreground">
+              <Loader2 size={13} className="animate-spin motion-reduce:animate-none" /> Loading repositories…
             </div>
           ) : repoError ? (
-            <p className="p-3 text-xs text-red-400">{repoError}</p>
+            <p className="py-3 text-[13px] text-danger">{repoError}</p>
           ) : repos.length === 0 ? (
-            <p className="p-3 text-xs text-muted-foreground">No repositories match.</p>
+            <p className="py-3 text-[13px] text-muted-foreground">No repositories match that search.</p>
           ) : (
             repos.map((repo) => (
               <button
@@ -244,13 +243,13 @@ const LinkRepoForm = ({ sync, fileCount, onLinked }: LinkRepoFormProps) => {
                 role="option"
                 aria-selected={false}
                 onClick={() => setSelected(repo)}
-                className="flex w-full items-center gap-2 border-b border-border/40 px-3 py-2 text-left last:border-b-0 hover:bg-secondary/40 focus-visible:bg-secondary/40 focus-visible:outline-none"
+                className="flex w-full items-baseline gap-3 border-b border-rule px-2 py-2 text-left last:border-b-0 transition-colors duration-150 hover:bg-ink focus-visible:bg-ink focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary"
               >
-                {repo.private ? <Lock size={12} className="shrink-0 text-yellow-500/80" /> : <Globe size={12} className="shrink-0 text-muted-foreground" />}
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-xs text-foreground">{repo.fullName}</span>
-                  {repo.description && <span className="block truncate text-[11px] text-muted-foreground">{repo.description}</span>}
+                  <span className="block truncate text-[13px] text-foreground">{repo.fullName}</span>
+                  {repo.description && <span className="block truncate text-[12px] text-muted-foreground">{repo.description}</span>}
                 </span>
+                {repo.private && <span className="shrink-0 text-[12px] text-muted-foreground">Private</span>}
               </button>
             ))
           )}
@@ -264,7 +263,7 @@ const LinkRepoForm = ({ sync, fileCount, onLinked }: LinkRepoFormProps) => {
             <span />
           )}
           <button type="button" onClick={() => setMode("create")} className={secondaryButtonClass}>
-            <Plus size={13} /> New repository
+            New repository
           </button>
         </div>
       </div>
@@ -277,27 +276,27 @@ const LinkRepoForm = ({ sync, fileCount, onLinked }: LinkRepoFormProps) => {
         type="button"
         onClick={() => setSelected(null)}
         disabled={working}
-        className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+        className={linkButtonClass}
       >
-        <ArrowLeft size={12} /> Choose another repository
+        Choose another repository
       </button>
-      <div className="flex items-center gap-2 rounded border border-border/60 bg-secondary/20 px-3 py-2">
-        {selected.private ? <Lock size={13} className="text-yellow-500/80" /> : <Globe size={13} className="text-muted-foreground" />}
-        <span className="truncate text-xs font-medium text-foreground">{selected.fullName}</span>
+      <div className="flex items-baseline gap-3 border-l-2 border-rule pl-3">
+        <span className="truncate text-[13px] font-medium text-foreground">{selected.fullName}</span>
+        <span className="shrink-0 text-[12px] text-muted-foreground">{selected.private ? "Private" : "Public"}</span>
       </div>
 
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1">
-          <span id={`${uid}-branch`} className="flex items-center gap-1 text-xs font-medium text-foreground">
-            <GitBranch size={12} /> Branch
+          <span id={`${uid}-branch`} className="text-[13px] font-medium text-foreground">
+            Branch
           </span>
           <Select value={branch} onValueChange={setBranch} disabled={working}>
-            <SelectTrigger aria-labelledby={`${uid}-branch`} className="h-8 text-xs">
+            <SelectTrigger aria-labelledby={`${uid}-branch`} className="h-8 rounded-md border-rule bg-ink font-mono text-[12px]">
               <SelectValue placeholder={loadingBranches ? "Loading…" : "Branch"} />
             </SelectTrigger>
             <SelectContent>
               {(branches.length ? branches.map((b) => b.name) : [selected.defaultBranch]).map((name) => (
-                <SelectItem key={name} value={name} className="text-xs">
+                <SelectItem key={name} value={name} className="font-mono text-[12px]">
                   {name}
                 </SelectItem>
               ))}
@@ -305,7 +304,7 @@ const LinkRepoForm = ({ sync, fileCount, onLinked }: LinkRepoFormProps) => {
           </Select>
         </div>
         <div className="space-y-1">
-          <label htmlFor={`${uid}-subdir`} className="text-xs font-medium text-foreground">
+          <label htmlFor={`${uid}-subdir`} className="text-[13px] font-medium text-foreground">
             Sub-folder <span className="text-muted-foreground">(optional)</span>
           </label>
           <input
@@ -318,17 +317,17 @@ const LinkRepoForm = ({ sync, fileCount, onLinked }: LinkRepoFormProps) => {
           />
         </div>
       </div>
-      {normalizedSubdir === null && <p className="text-[11px] text-red-400">That sub-folder path is not valid.</p>}
+      {normalizedSubdir === null && <p className="text-[12px] text-danger">That sub-folder path is not valid.</p>}
       {writeWarning && (
-        <p className="flex items-start gap-1.5 text-[11px] text-yellow-500/90">
-          <AlertTriangle size={12} className="mt-0.5 shrink-0" /> {writeWarning}
+        <p className="text-[12px] text-warning" role="status">
+          {writeWarning}
         </p>
       )}
 
       {progress ? (
         <div className="space-y-1.5" aria-live="polite">
-          <Progress value={progress.total ? (progress.done / progress.total) * 100 : 0} className="h-1.5" />
-          <p className="text-[11px] text-muted-foreground">
+          <Progress value={progress.total ? (progress.done / progress.total) * 100 : 0} className="h-1 rounded-none bg-ink" />
+          <p className="text-[12px] text-muted-foreground">
             {progress.phase === "tree" ? "Reading the repository…" : `Downloading files ${progress.done}/${progress.total}`}
           </p>
         </div>
@@ -338,23 +337,19 @@ const LinkRepoForm = ({ sync, fileCount, onLinked }: LinkRepoFormProps) => {
             type="button"
             disabled={!target || working}
             onClick={() => (fileCount > 0 ? setConfirmImport(true) : void runImport())}
-            className={`${secondaryButtonClass} h-auto flex-col items-start gap-0.5 py-2 text-left`}
+            className={`${secondaryButtonClass} h-auto flex-col items-start gap-0.5 py-2.5 text-left`}
           >
-            <span className="flex items-center gap-1.5">
-              <Download size={13} /> Import repo into this project
-            </span>
-            <span className="text-[11px] font-normal text-muted-foreground">Replaces the project's files with the repository's.</span>
+            <span>Import repository into this project</span>
+            <span className="text-[12px] font-normal text-muted-foreground">Replaces the project's files with the repository's.</span>
           </button>
           <button
             type="button"
             disabled={!target || working}
             onClick={runPush}
-            className={`${secondaryButtonClass} h-auto flex-col items-start gap-0.5 py-2 text-left`}
+            className={`${secondaryButtonClass} h-auto flex-col items-start gap-0.5 py-2.5 text-left`}
           >
-            <span className="flex items-center gap-1.5">
-              <Upload size={13} /> Push this project to repo
-            </span>
-            <span className="text-[11px] font-normal text-muted-foreground">Keeps your files; repo-only files are added here.</span>
+            <span>Push this project to the repository</span>
+            <span className="text-[12px] font-normal text-muted-foreground">Keeps your files; repo-only files are added here.</span>
           </button>
         </div>
       )}
@@ -365,7 +360,7 @@ const LinkRepoForm = ({ sync, fileCount, onLinked }: LinkRepoFormProps) => {
             <AlertDialogTitle>Replace this project's files?</AlertDialogTitle>
             <AlertDialogDescription>
               The {fileCount} file{fileCount === 1 ? "" : "s"} in this project will be replaced with the contents of {selected.fullName}
-              {normalizedSubdir ? `/${normalizedSubdir}` : ""} ({branch}). To keep them and send them to GitHub, use "Push this project to repo" instead.
+              {normalizedSubdir ? `/${normalizedSubdir}` : ""} ({branch}). To keep them and send them to GitHub, use "Push this project to the repository" instead.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -54,6 +54,11 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        ink: "hsl(var(--ink))",
+        raised: "hsl(var(--raised))",
+        rule: "hsl(var(--rule))",
+        faint: "hsl(var(--faint))",
+        danger: "hsl(var(--danger))",
         editor: "hsl(var(--editor-bg))",
         panel: "hsl(var(--panel-bg))",
         success: "hsl(var(--success))",
@@ -84,10 +89,6 @@ export default {
           from: { height: "var(--radix-accordion-content-height)" },
           to: { height: "0" },
         },
-        "pulse-glow": {
-          "0%, 100%": { opacity: "0.4" },
-          "50%": { opacity: "1" },
-        },
         "slide-in": {
           from: { transform: "translateX(-8px)", opacity: "0" },
           to: { transform: "translateX(0)", opacity: "1" },
@@ -100,7 +101,6 @@ export default {
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
-        "pulse-glow": "pulse-glow 2s ease-in-out infinite",
         "slide-in": "slide-in 0.2s ease-out",
         "caret-blink": "caret-blink 1.1s steps(1) infinite",
       },

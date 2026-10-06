@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadMonaco } from "@/lib/editor/loadMonaco";
 import { computeMinimalEdit } from "@/lib/editor/textDiff";
 import { ZUUP_THEME } from "@/lib/editor/theme";
-import { MAX_FONT_SIZE, MIN_FONT_SIZE, useEditorSettings } from "@/lib/editorSettings";
+import { FONT_FAMILY_CSS, MAX_FONT_SIZE, MIN_FONT_SIZE, useEditorSettings } from "@/lib/editorSettings";
 
 interface CodeEditorProps {
   language: string;
@@ -30,6 +30,10 @@ interface CodeEditorProps {
    * are disposed so they stop leaking memory and stop feeding the TypeScript service.
    */
   liveFileIds?: readonly string[];
+  /** Error and warning counts for the open file, from the language services' markers. */
+  onMarkersChange?: (counts: { errors: number; warnings: number }) => void;
+  /** Move the cursor to this position and scroll it into view. A new `nonce` repeats the jump. */
+  revealPosition?: { line: number; column?: number; nonce: number } | null;
 }
 
 const MODEL_SCHEME = "file:///zuup/";
@@ -68,7 +72,18 @@ const EditorLoading = ({ label = "Loading editor..." }: { label?: string }) => (
   </div>
 );
 
-const CodeEditor = ({ language, value, onChange, onCursorChange, filePath, onRun, onSave, liveFileIds }: CodeEditorProps) => {
+const CodeEditor = ({
+  language,
+  value,
+  onChange,
+  onCursorChange,
+  filePath,
+  onRun,
+  onSave,
+  liveFileIds,
+  onMarkersChange,
+  revealPosition,
+}: CodeEditorProps) => {
   const { settings, updateSettings } = useEditorSettings();
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
@@ -81,8 +96,8 @@ const CodeEditor = ({ language, value, onChange, onCursorChange, filePath, onRun
   const [attempt, setAttempt] = useState(0);
 
   // Latest callbacks, so editor commands never call stale closures.
-  const latest = useRef({ onChange, onCursorChange, onRun, onSave });
-  latest.current = { onChange, onCursorChange, onRun, onSave };
+  const latest = useRef({ onChange, onCursorChange, onRun, onSave, onMarkersChange });
+  latest.current = { onChange, onCursorChange, onRun, onSave, onMarkersChange };
 
   const fontSizeRef = useRef(settings.fontSize);
   fontSizeRef.current = settings.fontSize;
@@ -121,18 +136,21 @@ const CodeEditor = ({ language, value, onChange, onCursorChange, filePath, onRun
     () => ({
       ariaLabel: "Code editor",
       fontSize: settings.fontSize,
-      fontFamily: "'JetBrains Mono', monospace",
-      fontLigatures: true,
+      fontFamily: FONT_FAMILY_CSS[settings.fontFamily],
+      fontLigatures: settings.ligatures,
       tabSize: settings.tabSize,
-      insertSpaces: true,
+      insertSpaces: settings.insertSpaces,
       detectIndentation: false,
       wordWrap: settings.wordWrap ? "on" : "off",
       minimap: { enabled: settings.minimap, scale: 1 },
+      lineNumbers: settings.lineNumbers,
       smoothScrolling: true,
-      cursorBlinking: "smooth",
-      cursorSmoothCaretAnimation: "on",
-      renderWhitespace: "selection",
-      bracketPairColorization: { enabled: true },
+      cursorStyle: settings.cursorStyle,
+      cursorBlinking: settings.cursorBlinking,
+      cursorSmoothCaretAnimation: settings.cursorBlinking === "smooth" ? "on" : "off",
+      renderWhitespace: settings.renderWhitespace,
+      bracketPairColorization: { enabled: settings.bracketPairColors },
+      stickyScroll: { enabled: settings.stickyScroll },
       autoClosingBrackets: "languageDefined",
       autoClosingQuotes: "languageDefined",
       autoIndent: "full",
@@ -176,10 +194,62 @@ const CodeEditor = ({ language, value, onChange, onCursorChange, filePath, onRun
       padding: { top: 16, bottom: 16 },
       scrollBeyondLastLine: false,
       renderLineHighlight: "all",
-      guides: { bracketPairs: true, indentation: true },
+      guides: { bracketPairs: settings.bracketPairColors, indentation: true },
     }),
     [settings],
   );
+
+  // Indentation lives on the model: apply it to the open file whenever it or the settings change.
+  useEffect(() => {
+    editorRef.current?.getModel()?.updateOptions({ tabSize: settings.tabSize, insertSpaces: settings.insertSpaces });
+  }, [settings.tabSize, settings.insertSpaces, filePath, mounted]);
+
+  // Font changes need Monaco to measure glyph widths again once the web font is available.
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    if (!monaco || typeof document === "undefined" || !document.fonts) return;
+    let alive = true;
+    void document.fonts.ready.then(() => alive && monaco.editor.remeasureFonts());
+    return () => {
+      alive = false;
+    };
+  }, [settings.fontFamily, settings.ligatures, mounted]);
+
+  // Problem counts for the open file. Recomputed when markers change or another file opens.
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    const editor = editorRef.current;
+    if (!monaco || !editor) return;
+    const report = () => {
+      const model = editor.getModel();
+      if (!model) return latest.current.onMarkersChange?.({ errors: 0, warnings: 0 });
+      const markers = monaco.editor.getModelMarkers({ resource: model.uri });
+      latest.current.onMarkersChange?.({
+        errors: markers.filter((m) => m.severity === monaco.MarkerSeverity.Error).length,
+        warnings: markers.filter((m) => m.severity === monaco.MarkerSeverity.Warning).length,
+      });
+    };
+    report();
+    const sub = monaco.editor.onDidChangeMarkers((uris) => {
+      const uri = editor.getModel()?.uri.toString();
+      if (uri && uris.some((u) => u.toString() === uri)) report();
+    });
+    const modelSub = editor.onDidChangeModel(report);
+    return () => {
+      sub.dispose();
+      modelSub.dispose();
+    };
+  }, [mounted, filePath, language]);
+
+  // Jump to a position on request (e.g. a problem in the terminal was clicked).
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || !revealPosition) return;
+    const position = { lineNumber: Math.max(1, revealPosition.line), column: Math.max(1, revealPosition.column ?? 1) };
+    editor.setPosition(position);
+    editor.revealPositionInCenterIfOutsideViewport(position);
+    editor.focus();
+  }, [revealPosition, mounted]);
 
   const handleMount: OnMount = useCallback((editor, monaco) => {
     editorRef.current = editor;

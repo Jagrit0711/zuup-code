@@ -1,9 +1,9 @@
 import { useEffect, useId, useState } from "react";
-import { ExternalLink, Github, KeyRound, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { type OAuthScope, detectOAuthConfigured, signInWithToken, startOAuth } from "@/lib/github";
-import { inputClass, primaryButtonClass } from "./styles";
+import { inputClass, linkButtonClass, primaryButtonClass } from "./styles";
 
 const PAT_URL = "https://github.com/settings/personal-access-tokens/new";
 
@@ -43,8 +43,8 @@ const GitHubSignIn = () => {
 
   if (oauthAvailable === null) {
     return (
-      <div className="flex items-center gap-2 py-4 text-xs text-muted-foreground">
-        <Loader2 size={13} className="animate-spin" /> Checking sign-in options…
+      <div className="flex items-center gap-2 py-4 text-[13px] text-muted-foreground">
+        <Loader2 size={13} className="animate-spin motion-reduce:animate-none" /> Checking sign-in options…
       </div>
     );
   }
@@ -52,31 +52,31 @@ const GitHubSignIn = () => {
   if (oauthAvailable && !usePat) {
     return (
       <div className="space-y-3">
-        <p className="text-[11px] leading-snug text-muted-foreground">
-          Zuup Code commits to GitHub as you. Choose what it may access:
+        <p className="text-[13px] leading-relaxed text-muted-foreground">
+          Choose which repositories Zuup Code may read and write.
         </p>
         <RadioGroup value={scope} onValueChange={(v) => setScope(v as OAuthScope)} className="gap-2">
-          <label htmlFor={`${uid}-public`} className="flex cursor-pointer items-start gap-2 rounded border border-border/60 p-2.5 hover:bg-secondary/30">
+          <label htmlFor={`${uid}-public`} className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-2 transition-colors duration-150 hover:bg-ink">
             <RadioGroupItem id={`${uid}-public`} value="public_repo" className="mt-0.5" />
             <span>
-              <span className="block text-xs font-medium text-foreground">Public repositories</span>
-              <span className="block text-[11px] text-muted-foreground">Read and write your public repos (public_repo).</span>
+              <span className="block text-[13px] font-medium text-foreground">Public repositories</span>
+              <span className="block text-[12px] text-muted-foreground">Read and write your public repositories. Scope <span className="font-mono text-[11px]">public_repo</span>.</span>
             </span>
           </label>
-          <label htmlFor={`${uid}-repo`} className="flex cursor-pointer items-start gap-2 rounded border border-border/60 p-2.5 hover:bg-secondary/30">
+          <label htmlFor={`${uid}-repo`} className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-2 transition-colors duration-150 hover:bg-ink">
             <RadioGroupItem id={`${uid}-repo`} value="repo" className="mt-0.5" />
             <span>
-              <span className="block text-xs font-medium text-foreground">Public and private repositories</span>
-              <span className="block text-[11px] text-muted-foreground">Needed to sync private repos (repo).</span>
+              <span className="block text-[13px] font-medium text-foreground">Public and private repositories</span>
+              <span className="block text-[12px] text-muted-foreground">Needed to sync private repositories. Scope <span className="font-mono text-[11px]">repo</span>.</span>
             </span>
           </label>
         </RadioGroup>
         <div className="flex items-center justify-between gap-3">
-          <button type="button" onClick={() => setUsePat(true)} className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
+          <button type="button" onClick={() => setUsePat(true)} className={linkButtonClass}>
             Use an access token instead
           </button>
           <button type="button" onClick={() => startOAuth({ scope })} className={primaryButtonClass}>
-            <Github size={13} /> Continue with GitHub
+            Continue with GitHub
           </button>
         </div>
       </div>
@@ -85,20 +85,20 @@ const GitHubSignIn = () => {
 
   return (
     <form onSubmit={submitToken} className="space-y-3">
-      <div className="space-y-1.5 text-[11px] leading-snug text-muted-foreground">
+      <div className="space-y-1.5 text-[13px] leading-relaxed text-muted-foreground">
         <p>
           Paste a GitHub personal access token. A{" "}
-          <a href={PAT_URL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 text-primary hover:underline">
-            fine-grained token <ExternalLink size={10} />
+          <a href={PAT_URL} target="_blank" rel="noopener noreferrer" className="text-foreground underline underline-offset-2 hover:text-primary">
+            fine-grained token
           </a>{" "}
           limited to the repositories you want, with <span className="font-medium text-foreground">Contents: Read and write</span>, is the safest choice.
-          To create new repositories from here, also grant <span className="font-medium text-foreground">Administration: Read and write</span> (or use a classic token with the <code>repo</code> scope).
+          To create new repositories from here, also grant <span className="font-medium text-foreground">Administration: Read and write</span> (or use a classic token with the <code className="font-mono text-[12px]">repo</code> scope).
         </p>
         <p>The token is stored only in this browser and sent only to GitHub.</p>
       </div>
       <div className="space-y-1">
-        <label htmlFor={`${uid}-token`} className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-          <KeyRound size={12} /> Access token
+        <label htmlFor={`${uid}-token`} className="text-[13px] font-medium text-foreground">
+          Access token
         </label>
         <input
           id={`${uid}-token`}
@@ -111,21 +111,21 @@ const GitHubSignIn = () => {
           className={inputClass}
         />
         {error && (
-          <p className="text-[11px] text-red-400" role="alert">
+          <p className="text-[12px] text-danger" role="alert">
             {error}
           </p>
         )}
       </div>
       <div className="flex items-center justify-between gap-3">
         {oauthAvailable ? (
-          <button type="button" onClick={() => setUsePat(false)} className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
+          <button type="button" onClick={() => setUsePat(false)} className={linkButtonClass}>
             Sign in with GitHub instead
           </button>
         ) : (
           <span />
         )}
         <button type="submit" disabled={!token.trim() || busy} className={primaryButtonClass}>
-          {busy ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />} Sign in
+          {busy && <Loader2 size={13} className="animate-spin motion-reduce:animate-none" />} Sign in
         </button>
       </div>
     </form>

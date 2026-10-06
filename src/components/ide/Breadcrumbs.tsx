@@ -1,77 +1,56 @@
-import { ChevronRight, Folder, FolderOpen } from "lucide-react";
-import { getBreadcrumbSegments, getFileIconInfo } from "@/lib/folderTree";
+import { getBreadcrumbSegments } from "@/lib/folderTree";
 
 interface BreadcrumbsProps {
   activeFilePath?: string;
   projectName?: string | null;
+  /** Kept for compatibility; run state now shows on the Run button and in the status bar. */
   isRunning?: boolean;
   onNavigateFolder?: (folderPath: string) => void;
 }
 
-const Breadcrumbs = ({
-  activeFilePath = "",
-  projectName = "zuup-project",
-  isRunning = false,
-  onNavigateFolder,
-}: BreadcrumbsProps) => {
+const crumb =
+  "rounded-sm px-0.5 transition-colors duration-150 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary";
+
+/** Path of the active file, one hairline below the tabs. Folders open the Explorer. */
+const Breadcrumbs = ({ activeFilePath = "", projectName = "zuup-project", onNavigateFolder }: BreadcrumbsProps) => {
   const segments = getBreadcrumbSegments(activeFilePath, projectName || "zuup-project");
-  const fileIconInfo = getFileIconInfo(activeFilePath);
 
   return (
-    <div className="flex h-7 w-full items-center justify-between border-b border-white/[0.06] bg-[#0c0f1a]/80 backdrop-blur-md px-3 select-none text-[11px] font-mono shrink-0 z-10">
-      {/* ─── Breadcrumb trail ─── */}
-      <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-0.5 min-w-0">
-        {/* Breadcrumb Path Segments */}
-        <div className="flex items-center gap-1 truncate">
-          {segments.map((seg, idx) => {
-            return (
-              <div key={seg.path || seg.label} className="flex items-center gap-1 shrink-0">
-                {idx > 0 && (
-                  <ChevronRight size={10} className="text-muted-foreground/40 shrink-0" />
-                )}
-
-                {seg.isRoot ? (
-                  <button
-                    onClick={() => onNavigateFolder && onNavigateFolder("")}
-                    className="flex items-center gap-1 text-foreground/80 hover:text-foreground font-semibold transition-colors"
-                    title={`Project Root: ${seg.label}`}
-                  >
-                    <Folder size={11} className="text-amber-400" />
-                    <span className="truncate">{seg.label}</span>
-                  </button>
-                ) : seg.isFolder ? (
-                  <button
-                    onClick={() => onNavigateFolder && onNavigateFolder(seg.path)}
-                    className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
-                    title={`Folder: ${seg.path}`}
-                  >
-                    <FolderOpen size={11} className="text-amber-400/80" />
-                    <span className="truncate">{seg.label}</span>
-                  </button>
-                ) : (
-                  <div className="flex items-center gap-1 text-foreground font-medium">
-                    <span className={`text-[10px] font-bold ${fileIconInfo.badgeColor}`}>
-                      {fileIconInfo.symbol}
-                    </span>
-                    <span className="truncate">{seg.label}</span>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* ─── Right: Subtle status indicator ─── */}
-      <div className="flex items-center gap-2 shrink-0 pl-2">
-        {isRunning && (
-          <div className="flex items-center gap-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-[10px] text-emerald-400 animate-pulse">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            <span>Running...</span>
-          </div>
-        )}
-      </div>
-    </div>
+    <nav
+      aria-label="File path"
+      className="z-10 flex h-6 w-full min-w-0 shrink-0 select-none items-center overflow-hidden bg-ink px-3 font-mono text-[12px] text-muted-foreground"
+    >
+      <ol className="no-scrollbar flex min-w-0 items-center overflow-x-auto whitespace-nowrap">
+        {segments.map((seg, idx) => {
+          const isLast = idx === segments.length - 1;
+          return (
+            <li key={seg.path || seg.label} className="flex shrink-0 items-center">
+              {idx > 0 && (
+                <span className="px-1 text-faint" aria-hidden="true">
+                  /
+                </span>
+              )}
+              {isLast && !seg.isFolder && !seg.isRoot ? (
+                <span className="text-foreground" aria-current="page">
+                  {seg.label}
+                </span>
+              ) : onNavigateFolder ? (
+                <button
+                  type="button"
+                  onClick={() => onNavigateFolder(seg.isRoot ? "" : seg.path)}
+                  className={crumb}
+                  title={seg.isRoot ? "Show the project in the Explorer" : `Show ${seg.path} in the Explorer`}
+                >
+                  {seg.label}
+                </button>
+              ) : (
+                <span className="px-0.5">{seg.label}</span>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </nav>
   );
 };
 

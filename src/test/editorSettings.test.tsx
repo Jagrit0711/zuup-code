@@ -3,7 +3,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_EDITOR_SETTINGS,
   EDITOR_SETTINGS_STORAGE_KEY,
+  LEGACY_EDITOR_SETTINGS_STORAGE_KEYS,
+  __resetEditorSettingsStoreForTests,
+  changedFromDefaults,
   getEditorSettings,
+  parseSettingsFile,
+  replaceEditorSettings,
+  serializeSettings,
   resetEditorSettings,
   sanitizeSettings,
   updateEditorSettings,
@@ -36,13 +42,37 @@ describe("sanitizeSettings", () => {
   it("exposes the documented defaults", () => {
     expect(DEFAULT_EDITOR_SETTINGS).toEqual({
       fontSize: 14,
+      fontFamily: "jetbrains",
+      ligatures: true,
       tabSize: 2,
+      insertSpaces: true,
       wordWrap: false,
       minimap: true,
+      lineNumbers: "on",
+      renderWhitespace: "selection",
+      bracketPairColors: true,
+      stickyScroll: true,
+      cursorStyle: "line",
+      cursorBlinking: "smooth",
       inlineSuggestions: true,
       autoComplete: true,
       formatOnPaste: true,
+      autoSaveDelay: 3000,
+      confirmBeforeLeave: true,
+      saveBeforeRun: false,
+      terminalFontSize: 13,
     });
+  });
+
+  it("rejects unknown enum values and snaps the auto-save delay", () => {
+    const s = sanitizeSettings({ lineNumbers: "sometimes", cursorStyle: "block", fontFamily: "comic", autoSaveDelay: 2500 });
+    expect(s.lineNumbers).toBe("on");
+    expect(s.cursorStyle).toBe("block");
+    expect(s.fontFamily).toBe("jetbrains");
+    expect(s.autoSaveDelay).toBe(3000);
+    expect(sanitizeSettings({ autoSaveDelay: 0 }).autoSaveDelay).toBe(0);
+    expect(sanitizeSettings({ terminalFontSize: 99 }).terminalFontSize).toBe(24);
+    expect(sanitizeSettings({ fontSize: null }).fontSize).toBe(14);
   });
 });
 
@@ -93,6 +123,78 @@ describe("editor settings store", () => {
     rerender();
     expect(result.current.updateSettings).toBe(updateSettings);
     expect(result.current.resetSettings).toBe(resetSettings);
+  });
+});
+
+describe("settings migration", () => {
+  const legacyKey = LEGACY_EDITOR_SETTINGS_STORAGE_KEYS[0];
+  afterEach(() => {
+    window.localStorage.removeItem(legacyKey);
+    window.localStorage.removeItem(EDITOR_SETTINGS_STORAGE_KEY);
+    __resetEditorSettingsStoreForTests();
+  });
+
+  it("moves v1 settings to the current key and fills new fields with defaults", () => {
+    window.localStorage.removeItem(EDITOR_SETTINGS_STORAGE_KEY);
+    window.localStorage.setItem(legacyKey, JSON.stringify({ fontSize: 18, tabSize: 4, minimap: false, inlineSuggestions: false }));
+    __resetEditorSettingsStoreForTests();
+    const s = getEditorSettings();
+    expect(s.fontSize).toBe(18);
+    expect(s.tabSize).toBe(4);
+    expect(s.minimap).toBe(false);
+    expect(s.inlineSuggestions).toBe(false);
+    expect(s.stickyScroll).toBe(DEFAULT_EDITOR_SETTINGS.stickyScroll);
+    expect(window.localStorage.getItem(legacyKey)).toBeNull();
+    expect(JSON.parse(window.localStorage.getItem(EDITOR_SETTINGS_STORAGE_KEY) as string).fontSize).toBe(18);
+  });
+
+  it("prefers the current key over the legacy one", () => {
+    window.localStorage.setItem(legacyKey, JSON.stringify({ fontSize: 18 }));
+    window.localStorage.setItem(EDITOR_SETTINGS_STORAGE_KEY, JSON.stringify({ fontSize: 20 }));
+    __resetEditorSettingsStoreForTests();
+    expect(getEditorSettings().fontSize).toBe(20);
+  });
+
+  it("survives corrupt storage", () => {
+    window.localStorage.setItem(EDITOR_SETTINGS_STORAGE_KEY, "{not json");
+    __resetEditorSettingsStoreForTests();
+    expect(getEditorSettings()).toEqual(DEFAULT_EDITOR_SETTINGS);
+  });
+});
+
+describe("settings export and import", () => {
+  afterEach(() => {
+    window.localStorage.removeItem(EDITOR_SETTINGS_STORAGE_KEY);
+    resetEditorSettings();
+  });
+
+  it("round-trips through the export format", () => {
+    const custom = { ...DEFAULT_EDITOR_SETTINGS, fontSize: 17, cursorStyle: "block" as const, wordWrap: true };
+    const result = parseSettingsFile(serializeSettings(custom));
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.settings).toEqual(custom);
+  });
+
+  it("accepts a bare settings object and reports unknown keys", () => {
+    const result = parseSettingsFile(JSON.stringify({ fontSize: 12, theme: "light" }));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.settings.fontSize).toBe(12);
+      expect(result.ignored).toEqual(["theme"]);
+    }
+  });
+
+  it("explains what is wrong with bad files", () => {
+    expect(parseSettingsFile("nope")).toMatchObject({ ok: false });
+    expect(parseSettingsFile("[1,2]")).toMatchObject({ ok: false });
+    expect(parseSettingsFile(JSON.stringify({ kind: "something-else", settings: {} }))).toMatchObject({ ok: false });
+    expect(parseSettingsFile(JSON.stringify({ hello: 1 }))).toMatchObject({ ok: false });
+  });
+
+  it("replaces every setting and lists changes from the defaults", () => {
+    replaceEditorSettings({ ...DEFAULT_EDITOR_SETTINGS, minimap: false, terminalFontSize: 15 });
+    expect(getEditorSettings().minimap).toBe(false);
+    expect(changedFromDefaults(getEditorSettings()).sort()).toEqual(["minimap", "terminalFontSize"]);
   });
 });
 

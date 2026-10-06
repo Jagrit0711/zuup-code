@@ -205,7 +205,7 @@ export async function updateProfile(
 ): Promise<{ success: boolean; error?: string }> {
   try {
     // Update Auth user metadata
-    await supabase.auth.updateUser({
+    const { error: authErr } = await supabase.auth.updateUser({
       data: {
         full_name: updates.display_name,
         name: updates.display_name,
@@ -240,7 +240,9 @@ export async function updateProfile(
 
     if (!profileErr) return { success: true };
 
-    return { success: true }; // auth user updated regardless
+    // Neither table accepted the change; it only counts if the auth metadata was saved.
+    if (authErr) return { success: false, error: authErr.message };
+    return { success: true };
   } catch (err: unknown) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
