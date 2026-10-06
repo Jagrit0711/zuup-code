@@ -35,6 +35,48 @@
     <meta name="theme-color" content="#e63462" />
     <meta name="msapplication-TileColor" content="#e63462" />
     <meta name="format-detection" content="telephone=no" />
+    <!--
+      Boot guard. If the app's script fails to load (most often a request that lands mid-deploy and gets
+      the HTML fallback instead of JavaScript), reload once; if that fails too, show a message instead of
+      a blank page. src/lib/bootRecovery.ts sets window.__zuupBooted and clears the retry flag.
+    -->
+    <script>
+      (function () {
+        var KEY = "zuup_boot_retry";
+        var handled = false;
+        function showMessage() {
+          var root = document.getElementById("root");
+          if (!root) return;
+          root.innerHTML =
+            '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0E1016;color:#E6E8EE;font:15px/1.6 Inter,system-ui,sans-serif;padding:16px">' +
+            '<div style="max-width:420px"><p style="font-size:20px;font-weight:600;margin:0 0 8px">Zuup Code did not load</p>' +
+            '<p style="color:#8B90A0;margin:0 0 20px">This can happen for a moment right after an update. Reloading usually fixes it.</p>' +
+            '<button type="button" onclick="location.reload()" style="background:#E63462;color:#fff;border:0;border-radius:6px;padding:10px 18px;font:600 15px Inter,system-ui,sans-serif;cursor:pointer">Reload</button></div></div>';
+        }
+        function onScriptFailure() {
+          if (handled || window.__zuupBooted) return;
+          handled = true;
+          var retried = false;
+          try { retried = sessionStorage.getItem(KEY) === "1"; } catch (e) {}
+          if (!retried) {
+            try { sessionStorage.setItem(KEY, "1"); } catch (e) {}
+            var url = new URL(location.href);
+            url.searchParams.set("_r", Date.now().toString(36));
+            location.replace(url.toString());
+            return;
+          }
+          showMessage();
+        }
+        window.addEventListener(
+          "error",
+          function (event) {
+            var target = event.target;
+            if (target && target.tagName === "SCRIPT" && target.type === "module") onScriptFailure();
+          },
+          true
+        );
+      })();
+    </script>
   </head>
 
   <body>
