@@ -1,4 +1,4 @@
-import { Files, Search, History, Settings, User as UserIcon } from "lucide-react";
+import { Files, Search, History, Settings, User as UserIcon, Github } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { User } from "@supabase/supabase-js";
 import type { Profile } from "@/lib/profile";
@@ -9,6 +9,7 @@ interface ActivityBarProps {
   sidebarOpen: boolean;
   onTabChange: (tab: SidebarTab) => void;
   onOpenSettings: () => void;
+  onOpenGitHub?: () => void;
   user?: User | null;
   profile?: Profile | null;
 }
@@ -18,6 +19,7 @@ const ActivityBar = ({
   sidebarOpen,
   onTabChange,
   onOpenSettings,
+  onOpenGitHub,
   user,
   profile,
 }: ActivityBarProps) => {
@@ -78,6 +80,18 @@ const ActivityBar = ({
           )}
           <History size={17} />
         </button>
+
+        {/* GitHub sync */}
+        {onOpenGitHub && (
+          <button
+            onClick={onOpenGitHub}
+            className="relative flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground/70 transition-all hover:bg-white/[0.08] hover:text-foreground"
+            title="GitHub sync"
+            aria-label="GitHub sync"
+          >
+            <Github size={17} />
+          </button>
+        )}
       </div>
 
       {/* Bottom utility icons */}

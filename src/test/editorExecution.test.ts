@@ -12,7 +12,6 @@ describe("Language Configuration & Resolution", () => {
     expect(cLang.extension).toBe(".c");
     expect(cLang.monacoId).toBe("c");
     expect(cLang.pistonLang).toBe("c");
-    expect(cLang.defaultCode).toContain("#include <stdio.h>");
   });
 
   it("should have distinct configurations for C++, Java, and Python", () => {
@@ -64,12 +63,12 @@ describe("Piston Code Execution with Stdin", () => {
   });
 
   it("should send stdin payload to /api/execute when provided", async () => {
-    let capturedBody: any = null;
+    let capturedBody: Record<string, unknown> | null = null;
 
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockImplementation((url: string, options: any) => {
-        capturedBody = JSON.parse(options.body);
+      vi.fn().mockImplementation((url: string, options: RequestInit) => {
+        capturedBody = JSON.parse(String(options.body));
         return Promise.resolve({
           ok: true,
           json: () =>

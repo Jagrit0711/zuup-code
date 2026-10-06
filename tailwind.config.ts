@@ -1,4 +1,5 @@
 import type { Config } from "tailwindcss";
+import tailwindcssAnimate from "tailwindcss-animate";
 
 export default {
   darkMode: ["class"],
@@ -16,6 +17,8 @@ export default {
       fontFamily: {
         sans: ["Inter", "sans-serif"],
         mono: ["JetBrains Mono", "monospace"],
+        hand: ["Caveat", "cursive"],
+        display: ["Bricolage Grotesque", "Inter", "sans-serif"],
       },
       colors: {
         border: "hsl(var(--border))",
@@ -89,14 +92,19 @@ export default {
           from: { transform: "translateX(-8px)", opacity: "0" },
           to: { transform: "translateX(0)", opacity: "1" },
         },
+        "caret-blink": {
+          "0%, 49%": { opacity: "1" },
+          "50%, 100%": { opacity: "0" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
         "pulse-glow": "pulse-glow 2s ease-in-out infinite",
         "slide-in": "slide-in 0.2s ease-out",
+        "caret-blink": "caret-blink 1.1s steps(1) infinite",
       },
     },
   },
-  plugins: [require("tailwindcss-animate")],
+  plugins: [tailwindcssAnimate],
 } satisfies Config;

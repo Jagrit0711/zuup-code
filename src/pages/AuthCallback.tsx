@@ -3,8 +3,8 @@ import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
 import { Loader2, AlertCircle, ArrowRight } from "lucide-react";
-
-const LOGO = "https://www.zuup.dev/lovable-uploads/b44b8051-6117-4b37-999d-014c4c33dd13.png";
+import { AuthShell } from "@/components/site/AuthShell";
+import { safeRedirectPath } from "@/lib/safeRedirect";
 
 const AuthCallback = () => {
   const navigate = useNavigate();
@@ -45,12 +45,12 @@ const AuthCallback = () => {
 
           if (data.session) {
             await refreshProfile();
-            const redirectTo = searchParams.get("redirect_to") || "/dashboard";
+            const redirectTo = safeRedirectPath(searchParams.get("redirect_to"), "/dashboard");
             navigate(redirectTo, { replace: true });
             return;
           }
-        } catch (err: any) {
-          setErrorMsg(err.message || "Failed to set session");
+        } catch (err) {
+          setErrorMsg(err instanceof Error && err.message ? err.message : "Failed to set session");
           return;
         }
       }
@@ -59,7 +59,7 @@ const AuthCallback = () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
         await refreshProfile();
-        const redirectTo = searchParams.get("redirect_to") || "/dashboard";
+        const redirectTo = safeRedirectPath(searchParams.get("redirect_to"), "/dashboard");
         navigate(redirectTo, { replace: true });
       } else {
         // No session found and no tokens passed
@@ -73,41 +73,31 @@ const AuthCallback = () => {
   }, [searchParams, navigate, refreshProfile]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background px-6 relative">
-      <div className="absolute top-20 left-1/2 -translate-x-1/2 w-[500px] h-[300px] bg-primary/8 rounded-full blur-[100px] pointer-events-none" />
-
-      <div className="w-full max-w-md text-center relative z-10">
-        <Link to="/" className="inline-flex items-center gap-2.5 mb-8">
-          <img src={LOGO} alt="Zuup" className="h-9 w-9 rounded" />
-          <span className="text-xl font-bold">Zuup</span>
-          <span className="text-xl font-light text-primary">Code</span>
-        </Link>
-
-        <div className="rounded-2xl border border-border/40 bg-card/60 backdrop-blur-xl p-8 shadow-2xl">
-          {errorMsg ? (
-            <div className="space-y-4">
-              <div className="h-12 w-12 rounded-full bg-destructive/10 text-destructive flex items-center justify-center mx-auto">
-                <AlertCircle size={24} />
-              </div>
-              <h2 className="text-lg font-bold">Authentication Failed</h2>
-              <p className="text-sm text-muted-foreground">{errorMsg}</p>
-              <Link
-                to="/login"
-                className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors w-full mt-4"
-              >
-                Back to Sign In <ArrowRight size={16} />
-              </Link>
-            </div>
-          ) : (
-            <div className="space-y-4 py-4">
-              <Loader2 size={32} className="animate-spin text-primary mx-auto" />
-              <h2 className="text-lg font-bold">Authenticating with Zuup</h2>
-              <p className="text-xs text-muted-foreground">Verifying secure credentials and setting up your workspace...</p>
-            </div>
-          )}
+    <AuthShell
+      withChrome={false}
+      title={errorMsg ? "Authentication failed" : "Signing you in"}
+      subtitle={errorMsg ? undefined : "Verifying your Zuup session and setting up your workspace."}
+    >
+      {errorMsg ? (
+        <div role="alert" className="space-y-4 text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+            <AlertCircle size={24} aria-hidden="true" />
+          </div>
+          <p className="text-sm leading-relaxed text-white/60">{errorMsg}</p>
+          <Link
+            to="/login"
+            className="focus-ring mt-2 flex w-full items-center justify-center gap-2 rounded-md bg-primary transition-colors hover:bg-primary/90 px-4 py-3 text-sm font-semibold text-primary-foreground"
+          >
+            Back to Sign In <ArrowRight size={16} aria-hidden="true" />
+          </Link>
         </div>
-      </div>
-    </div>
+      ) : (
+        <div role="status" className="flex flex-col items-center gap-3 py-4 text-center">
+          <Loader2 size={32} aria-hidden="true" className="animate-spin text-primary motion-reduce:animate-none" />
+          <p className="text-sm text-white/60">This only takes a moment...</p>
+        </div>
+      )}
+    </AuthShell>
   );
 };
 

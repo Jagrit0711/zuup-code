@@ -4,7 +4,23 @@
 const PISTON_API = "https://emkc.org/api/v2/piston/execute";
 const PISTON_AUTH_KEY = "ef4b83cc-396f-423c-80f7-4c12bec1fd2b";
 
-export default async function handler(req: any, res: any) {
+interface VercelRequest {
+  method?: string;
+  body: {
+    language?: string;
+    version?: string;
+    files?: unknown;
+    stdin?: unknown;
+    args?: unknown;
+  };
+}
+
+interface VercelResponse {
+  setHeader(name: string, value: string): void;
+  status(code: number): { json(body: unknown): void };
+}
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Only allow POST
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -21,7 +37,7 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    const pistonPayload: any = { language, version, files };
+    const pistonPayload: Record<string, unknown> = { language, version, files };
     if (typeof stdin === "string") {
       pistonPayload.stdin = stdin;
     }
@@ -42,11 +58,11 @@ export default async function handler(req: any, res: any) {
 
     // Forward the Piston response status and body
     return res.status(pistonResponse.status).json(data);
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Piston proxy error:", error);
     return res.status(502).json({
       message: "Failed to reach Piston API",
-      error: error.message,
+      error: error instanceof Error ? error.message : "Unknown error",
     });
   }
 }

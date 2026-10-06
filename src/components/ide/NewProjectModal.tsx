@@ -1,13 +1,13 @@
-import { X, FolderPlus, FileCode, Upload, Sparkles } from "lucide-react";
-import { useState, useRef } from "react";
-import { projectTemplates, ProjectTemplate } from "@/lib/projectTemplates";
-import { languages } from "@/lib/languages";
+import { X, FolderPlus, FileCode, Upload, Sparkles, FilePlus } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
+import { toast } from "sonner";
+import { getLanguageById, getLanguagesByGroup } from "@/lib/languages";
+import { readTextFiles } from "@/lib/fileSystem";
 
 export interface NewProjectData {
   name: string;
   description: string;
   language: string;
-  template: ProjectTemplate | null;
   uploadedFiles: { name: string; content: string }[];
 }
 
@@ -15,53 +15,75 @@ interface NewProjectModalProps {
   isOpen: boolean;
   onClose: () => void;
   onCreateProject: (data: NewProjectData) => void;
+  /** Language preselected in the picker (usually the language of the file being edited). */
+  defaultLanguage?: string;
 }
 
-const NewProjectModal = ({ isOpen, onClose, onCreateProject }: NewProjectModalProps) => {
+const ACCEPTED_EXTENSIONS =
+  ".py,.js,.mjs,.ts,.jsx,.tsx,.html,.css,.c,.cpp,.h,.hpp,.java,.go,.rs,.rb,.php,.lua,.swift,.kt,.cs,.dart,.r,.sql,.json,.xml,.yaml,.yml,.md,.txt,.csv,.sh,.pl,.scala,.hs,.clj,.ex,.exs,.nim";
+
+type Source = "blank" | "upload";
+
+const NewProjectModal = ({ isOpen, onClose, onCreateProject, defaultLanguage = "python" }: NewProjectModalProps) => {
   const [step, setStep] = useState<"info" | "source">("info");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [language, setLanguage] = useState("python");
-  const [source, setSource] = useState<"blank" | "template" | "upload">("blank");
-  const [selectedTemplate, setSelectedTemplate] = useState<string>("");
+  const [language, setLanguage] = useState(defaultLanguage);
+  const [source, setSource] = useState<Source>("blank");
   const [uploadedFiles, setUploadedFiles] = useState<{ name: string; content: string }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const titleId = useId();
+  const nameId = useId();
+  const descId = useId();
+  const langId = useId();
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  // Start each opening from a clean form with the caller's preferred language.
+  useEffect(() => {
+    if (isOpen) {
+      setStep("info");
+      setName("");
+      setDescription("");
+      setLanguage(defaultLanguage);
+      setSource("blank");
+      setUploadedFiles([]);
+      // The menu that opened this dialog may still be returning focus; claim it afterwards.
+      const t = setTimeout(() => nameInputRef.current?.focus(), 60);
+      return () => clearTimeout(t);
+    }
+  }, [isOpen, defaultLanguage]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
-  const reset = () => {
-    setStep("info");
-    setName("");
-    setDescription("");
-    setLanguage("python");
-    setSource("blank");
-    setSelectedTemplate("");
-    setUploadedFiles([]);
-  };
-
-  const handleClose = () => {
-    reset();
-    onClose();
-  };
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const fileList = e.target.files;
-    if (!fileList) return;
-
-    Array.from(fileList).forEach((file) => {
-      if (file.size > 1024 * 1024) return;
-
-      const reader = new FileReader();
-      reader.onload = () => {
-        setUploadedFiles((prev) => {
-          if (prev.some((f) => f.name === file.name)) return prev;
-          return [...prev, { name: file.name, content: reader.result as string }];
-        });
-      };
-      reader.readAsText(file);
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const list = e.target.files;
+    if (!list || list.length === 0) return;
+    const { files, skipped } = await readTextFiles(list);
+    if (skipped.length > 0) {
+      toast.error(`Skipped ${skipped.length} file${skipped.length > 1 ? "s" : ""}`, {
+        description: "Only text files up to 1 MB can be imported.",
+      });
+    }
+    setUploadedFiles((prev) => {
+      const known = new Set(prev.map((f) => f.name.toLowerCase()));
+      const fresh = files.filter((f) => {
+        const key = f.name.toLowerCase();
+        if (known.has(key)) return false;
+        known.add(key);
+        return true;
+      });
+      return [...prev, ...fresh];
     });
-
-    e.target.value = "";
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const handleRemoveFile = (fileName: string) => {
@@ -69,43 +91,41 @@ const NewProjectModal = ({ isOpen, onClose, onCreateProject }: NewProjectModalPr
   };
 
   const handleCreate = () => {
-    const template = source === "template"
-      ? projectTemplates.find((t) => t.id === selectedTemplate) || null
-      : null;
-
     onCreateProject({
       name: name.trim() || "Untitled Project",
       description: description.trim(),
       language,
-      template,
       uploadedFiles: source === "upload" ? uploadedFiles : [],
     });
-
-    reset();
     onClose();
   };
 
   const canProceed = name.trim().length > 0;
-  const canCreate =
-    source === "blank" ||
-    (source === "template" && selectedTemplate) ||
-    (source === "upload" && uploadedFiles.length > 0);
-
-  const selectedLang = languages.find((l) => l.id === language);
+  const canCreate = source === "blank" || uploadedFiles.length > 0;
+  const selectedLang = getLanguageById(language);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleClose} />
-      <div className="relative z-10 w-full max-w-2xl max-h-[85vh] flex flex-col rounded-xl glass-strong glow-primary shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} aria-hidden="true" />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="relative z-10 w-full max-w-xl max-h-[88vh] flex flex-col rounded-xl glass-strong glow-primary shadow-2xl"
+      >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-5 py-3.5 shrink-0">
           <div className="flex items-center gap-2">
             <FolderPlus size={16} className="text-primary" />
-            <h2 className="text-sm font-semibold text-foreground">
+            <h2 id={titleId} className="text-sm font-semibold text-foreground">
               {step === "info" ? "New Project" : "Choose Starting Point"}
             </h2>
           </div>
-          <button onClick={handleClose} className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground">
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+          >
             <X size={16} />
           </button>
         </div>
@@ -115,25 +135,29 @@ const NewProjectModal = ({ isOpen, onClose, onCreateProject }: NewProjectModalPr
           {step === "info" ? (
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-medium text-foreground mb-1.5">
+                <label htmlFor={nameId} className="block text-xs font-medium text-foreground mb-1.5">
                   Project Name <span className="text-primary">*</span>
                 </label>
                 <input
+                  id={nameId}
+                  ref={nameInputRef}
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="My Awesome Project"
                   autoFocus
+                  maxLength={80}
                   className="w-full rounded-lg border border-border/60 bg-secondary/30 px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary/40 transition-all"
                   onKeyDown={(e) => e.key === "Enter" && canProceed && setStep("source")}
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-foreground mb-1.5">
+                <label htmlFor={descId} className="block text-xs font-medium text-foreground mb-1.5">
                   Description <span className="text-muted-foreground">(optional)</span>
                 </label>
                 <textarea
+                  id={descId}
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                   placeholder="What does this project do?"
@@ -143,18 +167,23 @@ const NewProjectModal = ({ isOpen, onClose, onCreateProject }: NewProjectModalPr
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-foreground mb-1.5">
+                <label htmlFor={langId} className="block text-xs font-medium text-foreground mb-1.5">
                   Primary Language
                 </label>
                 <select
+                  id={langId}
                   value={language}
                   onChange={(e) => setLanguage(e.target.value)}
                   className="w-full rounded-lg border border-border/60 bg-secondary/30 px-3 py-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary/40 transition-all cursor-pointer"
                 >
-                  {languages.map((lang) => (
-                    <option key={lang.id} value={lang.id} className="bg-popover">
-                      {lang.label}
-                    </option>
+                  {getLanguagesByGroup().map((group) => (
+                    <optgroup key={group.id} label={group.label} className="bg-popover">
+                      {group.languages.map((lang) => (
+                        <option key={lang.id} value={lang.id} className="bg-popover">
+                          {lang.label}
+                        </option>
+                      ))}
+                    </optgroup>
                   ))}
                 </select>
               </div>
@@ -162,24 +191,24 @@ const NewProjectModal = ({ isOpen, onClose, onCreateProject }: NewProjectModalPr
           ) : (
             <div className="space-y-4">
               {/* Source type selector */}
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2" role="radiogroup" aria-label="Starting point">
                 {([
-                  { id: "blank" as const, label: "Blank", icon: "📄", desc: "Empty file" },
-                  { id: "template" as const, label: "Template", icon: "✨", desc: "Pre-built starter" },
-                  { id: "upload" as const, label: "Upload", icon: "📁", desc: "Your own files" },
-                ]).map((opt) => (
+                  { id: "blank" as const, label: "Blank", desc: "One empty file", Icon: FilePlus },
+                  { id: "upload" as const, label: "Upload", desc: "Start from your own files", Icon: Upload },
+                ]).map(({ id, label, desc, Icon }) => (
                   <button
-                    key={opt.id}
-                    onClick={() => setSource(opt.id)}
-                    className={`rounded-lg border-2 p-3 text-left transition-all ${
-                      source === opt.id
-                        ? "border-primary bg-primary/10"
-                        : "border-border/40 hover:border-border"
+                    key={id}
+                    type="button"
+                    role="radio"
+                    aria-checked={source === id}
+                    onClick={() => setSource(id)}
+                    className={`rounded-lg border-2 p-3 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 ${
+                      source === id ? "border-primary bg-primary/10" : "border-border/40 hover:border-border"
                     }`}
                   >
-                    <div className="text-lg mb-1">{opt.icon}</div>
-                    <div className="text-xs font-medium text-foreground">{opt.label}</div>
-                    <div className="text-[10px] text-muted-foreground">{opt.desc}</div>
+                    <Icon size={18} className="mb-1.5 text-primary" />
+                    <div className="text-xs font-medium text-foreground">{label}</div>
+                    <div className="text-[10px] text-muted-foreground">{desc}</div>
                   </button>
                 ))}
               </div>
@@ -188,43 +217,11 @@ const NewProjectModal = ({ isOpen, onClose, onCreateProject }: NewProjectModalPr
               {source === "blank" && (
                 <div className="rounded-lg bg-secondary/30 border border-border/30 p-4">
                   <p className="text-xs text-foreground/80">
-                    Creates a starter project for{" "}
-                    <span className="text-primary font-semibold">{selectedLang?.label || "the selected language"}</span>{" "}
-                    with a pre-configured <span className="text-primary font-mono">main{selectedLang?.extension || ""}</span> ready to write, autocomplete, and run immediately.
+                    Creates an empty{" "}
+                    <span className="text-primary font-mono">main{selectedLang.extension}</span> for{" "}
+                    <span className="text-primary font-semibold">{selectedLang.label}</span>. Nothing is pre-filled, so
+                    you start with a clean editor.
                   </p>
-                </div>
-              )}
-
-              {/* Template picker */}
-              {source === "template" && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-[300px] overflow-y-auto pr-1">
-                  {projectTemplates.map((template) => (
-                    <div
-                      key={template.id}
-                      className={`border-2 rounded-lg p-3.5 cursor-pointer transition-all hover:bg-secondary/50 ${
-                        selectedTemplate === template.id
-                          ? "border-primary bg-primary/10"
-                          : "border-border/40"
-                      }`}
-                      onClick={() => setSelectedTemplate(template.id)}
-                    >
-                      <div className="flex items-start gap-2.5">
-                        <div className="text-xl">{template.icon}</div>
-                        <div className="flex-1 min-w-0">
-                          <h4 className="text-xs font-medium text-foreground mb-0.5 truncate">
-                            {template.name}
-                          </h4>
-                          <p className="text-[10px] text-muted-foreground mb-1.5 line-clamp-2">
-                            {template.description}
-                          </p>
-                          <div className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
-                            <FileCode size={10} />
-                            <span>{template.files.length} files</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
                 </div>
               )}
 
@@ -237,16 +234,18 @@ const NewProjectModal = ({ isOpen, onClose, onCreateProject }: NewProjectModalPr
                     multiple
                     onChange={handleFileUpload}
                     className="hidden"
-                    accept=".py,.js,.ts,.jsx,.tsx,.html,.css,.c,.cpp,.h,.java,.go,.rs,.rb,.php,.lua,.swift,.kt,.dart,.r,.sql,.json,.xml,.yaml,.yml,.md,.txt,.sh,.bat"
+                    accept={ACCEPTED_EXTENSIONS}
+                    aria-label="Upload code files"
                   />
                   <button
+                    type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="w-full rounded-lg border-2 border-dashed border-border/60 hover:border-primary/40 p-6 text-center transition-all hover:bg-primary/5"
+                    className="w-full rounded-lg border-2 border-dashed border-border/60 hover:border-primary/40 p-6 text-center transition-all hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                   >
                     <Upload size={24} className="mx-auto mb-2 text-muted-foreground" />
                     <p className="text-xs font-medium text-foreground">Click to upload files</p>
                     <p className="text-[10px] text-muted-foreground mt-1">
-                      Select one or more code files (max 1MB each)
+                      Select one or more text files (max 1 MB each)
                     </p>
                   </button>
 
@@ -269,7 +268,8 @@ const NewProjectModal = ({ isOpen, onClose, onCreateProject }: NewProjectModalPr
                           </div>
                           <button
                             onClick={() => handleRemoveFile(f.name)}
-                            className="text-muted-foreground hover:text-destructive ml-2 shrink-0"
+                            aria-label={`Remove ${f.name}`}
+                            className="text-muted-foreground hover:text-destructive ml-2 shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary rounded"
                           >
                             <X size={12} />
                           </button>
@@ -294,7 +294,7 @@ const NewProjectModal = ({ isOpen, onClose, onCreateProject }: NewProjectModalPr
             </button>
           ) : (
             <button
-              onClick={handleClose}
+              onClick={onClose}
               className="px-3 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
             >
               Cancel

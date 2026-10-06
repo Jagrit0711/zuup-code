@@ -49,6 +49,8 @@ interface TerminalProps {
   // Active file info so terminal can detect stdin needs
   fileContent?: string;
   fileLang?: string;
+  // False when no file is open, so "run" can say so instead of pretending to execute something
+  hasActiveFile?: boolean;
   // Lets parent push execution results directly into terminal lines
   externalLines?: TermLine[];
   // Trigger from parent (e.g. Run button) when code requires stdin
@@ -63,6 +65,7 @@ const TerminalPanel = ({
   isRunning,
   fileContent = "",
   fileLang = "",
+  hasActiveFile = true,
   externalLines,
   requestStdin,
 }: TerminalProps) => {
@@ -337,6 +340,10 @@ const TerminalPanel = ({
     }
 
     if (cmd === "run") {
+      if (!hasActiveFile) {
+        pushLines({ text: "No file is open. Create or open a file first, then run it.", type: "error" });
+        return;
+      }
       const rest = trimmed.slice(3).trim();
       if (rest) {
         // User typed "run <input>", e.g. "run 42" or "run 10 20"
@@ -368,6 +375,10 @@ const TerminalPanel = ({
 
     // run-input — enter direct stdin collection in terminal
     if (cmd === "run-input") {
+      if (!hasActiveFile) {
+        pushLines({ text: "No file is open. Create or open a file first, then run it.", type: "error" });
+        return;
+      }
       pushLines(
         { text: "📥 Enter program input below and press Enter (Shift+Enter for multiple lines, Ctrl+C to cancel):", type: "info" },
       );
@@ -905,7 +916,7 @@ const TerminalPanel = ({
             <Cpu size={10} className="text-primary/70" />
             <select
               value={activeProcess}
-              onChange={(e) => setActiveProcess(e.target.value as any)}
+              onChange={(e) => setActiveProcess(e.target.value as "zsh" | "node")}
               className="bg-transparent text-muted-foreground hover:text-foreground outline-none cursor-pointer text-[10px]"
             >
               <option value="zsh" className="bg-[#0f121d]">1: zsh</option>

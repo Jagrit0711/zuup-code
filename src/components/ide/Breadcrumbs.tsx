@@ -1,4 +1,4 @@
-import { ChevronRight, Folder, FolderOpen, GitBranch } from "lucide-react";
+import { ChevronRight, Folder, FolderOpen } from "lucide-react";
 import { getBreadcrumbSegments, getFileIconInfo } from "@/lib/folderTree";
 
 interface BreadcrumbsProps {
@@ -21,14 +21,6 @@ const Breadcrumbs = ({
     <div className="flex h-7 w-full items-center justify-between border-b border-white/[0.06] bg-[#0c0f1a]/80 backdrop-blur-md px-3 select-none text-[11px] font-mono shrink-0 z-10">
       {/* ─── Breadcrumb trail ─── */}
       <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-0.5 min-w-0">
-        {/* Git branch chip */}
-        <div className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground/70 bg-white/[0.04] border border-white/[0.05] shrink-0">
-          <GitBranch size={10} className="text-primary/70" />
-          <span>main</span>
-        </div>
-
-        <div className="h-3 w-px bg-white/[0.08] mx-0.5 shrink-0" />
-
         {/* Breadcrumb Path Segments */}
         <div className="flex items-center gap-1 truncate">
           {segments.map((seg, idx) => {

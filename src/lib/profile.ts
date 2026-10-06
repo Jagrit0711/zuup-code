@@ -241,8 +241,8 @@ export async function updateProfile(
     if (!profileErr) return { success: true };
 
     return { success: true }; // auth user updated regardless
-  } catch (err: any) {
-    return { success: false, error: err.message };
+  } catch (err: unknown) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

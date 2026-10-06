@@ -10,7 +10,7 @@ if (!globalThis.localStorage || typeof globalThis.localStorage.clear !== "functi
     clear: () => store.clear(),
     key: (i: number) => Array.from(store.keys())[i] ?? null,
     get length() { return store.size; }
-  } as any;
+  } as Storage;
 }
 
 Object.defineProperty(window, "matchMedia", {
