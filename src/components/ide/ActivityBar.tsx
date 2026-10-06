@@ -1,7 +1,8 @@
-import { Files, Search, History, Settings, User as UserIcon, Github } from "lucide-react";
-import { Link } from "react-router-dom";
+import type { ReactNode } from "react";
+import { Files, Github, History, Search, Settings } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
 import type { Profile } from "@/lib/profile";
+import Hint from "@/components/ide/chrome/Hint";
 import type { SidebarTab } from "./Sidebar";
 
 interface ActivityBarProps {
@@ -10,126 +11,67 @@ interface ActivityBarProps {
   onTabChange: (tab: SidebarTab) => void;
   onOpenSettings: () => void;
   onOpenGitHub?: () => void;
+  /** Kept for compatibility; the account avatar now lives in the top bar. */
   user?: User | null;
+  /** Kept for compatibility; the account avatar now lives in the top bar. */
   profile?: Profile | null;
 }
 
-const ActivityBar = ({
-  activeTab,
-  sidebarOpen,
-  onTabChange,
-  onOpenSettings,
-  onOpenGitHub,
-  user,
-  profile,
-}: ActivityBarProps) => {
-  const handleItemClick = (tab: SidebarTab) => {
-    onTabChange(tab);
-  };
+interface ItemProps {
+  label: string;
+  shortcut?: string;
+  active?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}
 
-  const displayName = profile?.display_name || profile?.username || user?.email?.split("@")[0] || "";
+const Item = ({ label, shortcut, active = false, onClick, children }: ItemProps) => (
+  <Hint label={label} shortcut={shortcut} side="right">
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      aria-pressed={active}
+      className={`relative flex h-11 w-full items-center justify-center transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary ${
+        active ? "text-foreground" : "text-faint hover:text-foreground"
+      }`}
+    >
+      {active && <span className="absolute inset-y-1.5 left-0 w-[2px] bg-primary" aria-hidden="true" />}
+      {children}
+    </button>
+  </Hint>
+);
 
-  return (
-    <div className="flex h-full w-12 flex-col items-center justify-between border-r border-white/[0.08] liquid-glass py-2.5 shrink-0 select-none z-20">
-      {/* Top action icons */}
-      <div className="flex flex-col items-center gap-1.5 w-full">
-        {/* Explorer button */}
-        <button
-          onClick={() => handleItemClick("explorer")}
-          className={`relative flex h-9 w-9 items-center justify-center rounded-lg transition-all ${
-            sidebarOpen && activeTab === "explorer"
-              ? "text-primary bg-primary/20 shadow-sm border border-primary/30 glow-primary-sm"
-              : "text-muted-foreground/70 hover:bg-white/[0.08] hover:text-foreground"
-          }`}
-          title="Explorer (Ctrl+Shift+E)"
-        >
-          {sidebarOpen && activeTab === "explorer" && (
-            <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-primary" />
-          )}
-          <Files size={17} />
-        </button>
+const ICON = { size: 20, strokeWidth: 1.5 } as const;
 
-        {/* Search button */}
-        <button
-          onClick={() => handleItemClick("search")}
-          className={`relative flex h-9 w-9 items-center justify-center rounded-lg transition-all ${
-            sidebarOpen && activeTab === "search"
-              ? "text-primary bg-primary/20 shadow-sm border border-primary/30 glow-primary-sm"
-              : "text-muted-foreground/70 hover:bg-white/[0.08] hover:text-foreground"
-          }`}
-          title="Search across files (Ctrl+Shift+F)"
-        >
-          {sidebarOpen && activeTab === "search" && (
-            <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-primary" />
-          )}
-          <Search size={17} />
-        </button>
-
-        {/* Timeline / History button */}
-        <button
-          onClick={() => handleItemClick("timeline")}
-          className={`relative flex h-9 w-9 items-center justify-center rounded-lg transition-all ${
-            sidebarOpen && activeTab === "timeline"
-              ? "text-primary bg-primary/20 shadow-sm border border-primary/30 glow-primary-sm"
-              : "text-muted-foreground/70 hover:bg-white/[0.08] hover:text-foreground"
-          }`}
-          title="Timeline & Revision History"
-        >
-          {sidebarOpen && activeTab === "timeline" && (
-            <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-primary" />
-          )}
-          <History size={17} />
-        </button>
-
-        {/* GitHub sync */}
-        {onOpenGitHub && (
-          <button
-            onClick={onOpenGitHub}
-            className="relative flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground/70 transition-all hover:bg-white/[0.08] hover:text-foreground"
-            title="GitHub sync"
-            aria-label="GitHub sync"
-          >
-            <Github size={17} />
-          </button>
-        )}
-      </div>
-
-      {/* Bottom utility icons */}
-      <div className="flex flex-col items-center gap-1.5 w-full">
-        <button
-          onClick={onOpenSettings}
-          className="flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground/70 hover:bg-secondary/60 hover:text-foreground transition-all"
-          title="Settings (Ctrl+,)"
-        >
-          <Settings size={18} />
-        </button>
-
-        {user ? (
-          <Link
-            to="/dashboard"
-            className="flex h-8 w-8 items-center justify-center rounded-full overflow-hidden ring-1 ring-border/50 hover:ring-primary transition-all"
-            title={`Dashboard (${displayName})`}
-          >
-            {profile?.avatar_url ? (
-              <img src={profile.avatar_url} alt="" className="h-full w-full object-cover" />
-            ) : (
-              <div className="h-full w-full bg-primary/20 flex items-center justify-center text-[10px] font-bold text-primary">
-                {displayName.slice(0, 1).toUpperCase()}
-              </div>
-            )}
-          </Link>
-        ) : (
-          <Link
-            to="/login"
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground/70 hover:bg-secondary/60 hover:text-foreground transition-all"
-            title="Sign In"
-          >
-            <UserIcon size={16} />
-          </Link>
-        )}
-      </div>
+const ActivityBar = ({ activeTab, sidebarOpen, onTabChange, onOpenSettings, onOpenGitHub }: ActivityBarProps) => (
+  <nav
+    aria-label="Side panels"
+    className="z-20 flex h-full w-12 shrink-0 select-none flex-col justify-between border-r border-rule bg-panel py-1"
+  >
+    <div className="flex flex-col">
+      <Item label="Explorer" shortcut="Ctrl+Shift+E" active={sidebarOpen && activeTab === "explorer"} onClick={() => onTabChange("explorer")}>
+        <Files {...ICON} />
+      </Item>
+      <Item label="Search" shortcut="Ctrl+Shift+F" active={sidebarOpen && activeTab === "search"} onClick={() => onTabChange("search")}>
+        <Search {...ICON} />
+      </Item>
+      <Item label="Timeline" active={sidebarOpen && activeTab === "timeline"} onClick={() => onTabChange("timeline")}>
+        <History {...ICON} />
+      </Item>
+      {onOpenGitHub && (
+        <Item label="GitHub sync" onClick={onOpenGitHub}>
+          <Github {...ICON} />
+        </Item>
+      )}
     </div>
-  );
-};
+
+    <div className="flex flex-col">
+      <Item label="Settings" shortcut="Ctrl+," onClick={onOpenSettings}>
+        <Settings {...ICON} />
+      </Item>
+    </div>
+  </nav>
+);
 
 export default ActivityBar;

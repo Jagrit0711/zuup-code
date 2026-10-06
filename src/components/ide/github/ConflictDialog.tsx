@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
-import { AlertTriangle, Check, Cloud, FileText, Loader2, Monitor } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import type { Conflict, ConflictKind } from "@/lib/github";
@@ -8,7 +8,7 @@ import { loadMonaco } from "@/lib/editor/loadMonaco";
 import { ZUUP_THEME } from "@/lib/editor/theme";
 import { detectLanguageFromFilename } from "@/lib/languages";
 import type { GitHubSync } from "@/hooks/useGitHubSync";
-import { primaryButtonClass, secondaryButtonClass } from "./styles";
+import { dialogSurfaceClass, dialogTitleClass, primaryButtonClass, secondaryButtonClass } from "./styles";
 
 interface ConflictDialogProps {
   sync: GitHubSync;
@@ -33,10 +33,10 @@ const DIFF_OPTIONS = {
 
 /** Fallback when Monaco cannot load: two plain panes. */
 const PlainSide = ({ title, content }: { title: string; content: string | null }) => (
-  <div className="flex min-h-0 min-w-0 flex-1 flex-col border-border first:border-r">
-    <div className="border-b border-border px-3 py-1.5 text-[11px] text-muted-foreground">{title}</div>
-    <pre className="min-h-0 flex-1 overflow-auto p-3 font-mono text-[11px] leading-relaxed text-foreground">
-      {content ?? <span className="italic text-muted-foreground">(deleted)</span>}
+  <div className="flex min-h-0 min-w-0 flex-1 flex-col border-rule first:border-r">
+    <div className="border-b border-rule px-3 py-1.5 text-[12px] text-muted-foreground">{title}</div>
+    <pre className="min-h-0 flex-1 overflow-auto bg-ink p-3 font-mono text-[12px] leading-relaxed text-foreground">
+      {content ?? <span className="text-faint">Deleted</span>}
     </pre>
   </div>
 );
@@ -82,33 +82,32 @@ const ConflictDialog = ({ sync }: ConflictDialogProps) => {
 
   return (
     <Dialog open={open} onOpenChange={setConflictsOpen}>
-      <DialogContent className="flex h-[85vh] max-w-5xl flex-col gap-0 overflow-hidden rounded-xl border-border bg-transparent p-0 shadow-2xl glass-strong glow-primary">
-        <div className="flex items-center gap-2 border-b border-border px-5 py-3.5 pr-12">
-          <AlertTriangle size={16} className="text-red-400" aria-hidden="true" />
-          <DialogTitle className="text-sm font-semibold text-foreground">
-            Resolve sync conflicts ({conflicts.length})
+      <DialogContent className={`flex h-[85vh] max-w-5xl flex-col overflow-hidden ${dialogSurfaceClass}`}>
+        <div className="space-y-1 border-b border-rule px-5 pb-4 pt-5 pr-12">
+          <DialogTitle className={dialogTitleClass}>
+            Resolve sync conflicts <span className="font-sans text-[15px] font-normal text-muted-foreground">{conflicts.length}</span>
           </DialogTitle>
+          <DialogDescription className="text-[13px] text-muted-foreground">
+            These files changed both here and on GitHub. Your version stays in the editor until you choose.
+          </DialogDescription>
         </div>
-        <DialogDescription className="border-b border-border px-5 py-2 text-[11px] text-muted-foreground">
-          These files changed both here and on GitHub. Your version stays in the editor until you choose.
-        </DialogDescription>
 
         <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
-          <ul className="max-h-40 shrink-0 overflow-y-auto border-b border-border sm:max-h-none sm:w-56 sm:border-b-0 sm:border-r" aria-label="Conflicting files">
+          <ul className="max-h-40 shrink-0 overflow-y-auto border-b border-rule bg-panel py-1 sm:max-h-none sm:w-60 sm:border-b-0 sm:border-r" aria-label="Conflicting files">
             {conflicts.map((c) => (
               <li key={c.path}>
                 <button
                   type="button"
                   onClick={() => setSelectedPath(c.path)}
                   aria-current={selected?.path === c.path}
-                  className={`flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-secondary/40 ${
-                    selected?.path === c.path ? "bg-primary/10" : ""
+                  className={`relative flex w-full flex-col px-4 py-2 text-left transition-colors duration-150 hover:bg-raised focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary ${
+                    selected?.path === c.path ? "bg-raised" : ""
                   }`}
                 >
-                  <FileText size={13} className="mt-0.5 shrink-0 text-muted-foreground" />
+                  {selected?.path === c.path && <span className="absolute inset-y-1 left-0 w-[2px] bg-primary" aria-hidden="true" />}
                   <span className="min-w-0">
-                    <span className="block truncate text-xs text-foreground">{c.path}</span>
-                    <span className="block truncate text-[10px] text-muted-foreground">{KIND_LABEL[c.kind]}</span>
+                    <span className="block truncate font-mono text-[12px] text-foreground">{c.path}</span>
+                    <span className="block truncate text-[12px] text-muted-foreground">{KIND_LABEL[c.kind]}</span>
                   </span>
                 </button>
               </li>
@@ -118,12 +117,12 @@ const ConflictDialog = ({ sync }: ConflictDialogProps) => {
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {selected && (
               <>
-                <div className="flex shrink-0 text-[11px] text-muted-foreground">
-                  <span className="flex flex-1 items-center gap-1.5 border-b border-r border-border px-3 py-1.5">
-                    <Cloud size={12} /> GitHub {selected.remote === null && "(deleted)"}
+                <div className="flex shrink-0 text-[12px] text-muted-foreground">
+                  <span className="flex-1 border-b border-r border-rule px-3 py-1.5">
+                    On GitHub{selected.remote === null && <span className="text-faint">, deleted</span>}
                   </span>
-                  <span className="flex flex-1 items-center gap-1.5 border-b border-border px-3 py-1.5">
-                    <Monitor size={12} /> Yours {selected.local === null && "(deleted)"}
+                  <span className="flex-1 border-b border-rule px-3 py-1.5">
+                    Yours{selected.local === null && <span className="text-faint">, deleted</span>}
                   </span>
                 </div>
                 <div className="min-h-0 flex-1">
@@ -136,7 +135,7 @@ const ConflictDialog = ({ sync }: ConflictDialogProps) => {
                       modified={selected.local ?? ""}
                       theme={ZUUP_THEME}
                       options={DIFF_OPTIONS}
-                      loading={<Loader2 size={16} className="animate-spin text-muted-foreground" />}
+                      loading={<Loader2 size={16} className="animate-spin text-muted-foreground motion-reduce:animate-none" />}
                     />
                   ) : monaco === "failed" ? (
                     <div className="flex h-full">
@@ -145,16 +144,16 @@ const ConflictDialog = ({ sync }: ConflictDialogProps) => {
                     </div>
                   ) : (
                     <div className="flex h-full items-center justify-center">
-                      <Loader2 size={16} className="animate-spin text-muted-foreground" />
+                      <Loader2 size={16} className="animate-spin text-muted-foreground motion-reduce:animate-none" />
                     </div>
                   )}
                 </div>
-                <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-4 py-3">
+                <div className="flex shrink-0 items-center justify-end gap-2 border-t border-rule px-4 py-3">
                   <button type="button" onClick={() => resolve("remote")} className={secondaryButtonClass}>
-                    <Cloud size={13} /> {selected.remote === null ? "Delete it (take theirs)" : "Take theirs"}
+                    {selected.remote === null ? "Delete it (take theirs)" : "Take theirs"}
                   </button>
                   <button type="button" onClick={() => resolve("local")} className={primaryButtonClass}>
-                    <Check size={13} /> {selected.local === null ? "Keep it deleted (mine)" : "Keep mine"}
+                    {selected.local === null ? "Keep it deleted (mine)" : "Keep mine"}
                   </button>
                 </div>
               </>

@@ -23,19 +23,19 @@ const LanguagePicker = ({ value, onChange, title = "Language" }: LanguagePickerP
           type="button"
           aria-label={`${title}: ${value.label}`}
           title={title}
-          className="flex items-center gap-1.5 rounded-md bg-secondary/60 px-2 py-1 text-[11px] font-medium text-foreground outline-none ring-1 ring-border/50 transition-all hover:ring-primary/50 focus-visible:ring-primary data-[state=open]:ring-primary"
+          className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[13px] text-muted-foreground transition-colors duration-150 hover:bg-raised hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary data-[state=open]:bg-raised data-[state=open]:text-foreground"
         >
           <span>{value.label}</span>
-          <ChevronDown size={10} className="text-muted-foreground" />
+          <ChevronDown size={12} className="text-faint" aria-hidden="true" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-64 p-0 z-[110]">
+      <PopoverContent align="start" className="z-[110] w-64 rounded-lg border-rule bg-raised p-0 shadow-float">
         <Command
           filter={(itemValue, search) => (itemValue.toLowerCase().includes(search.trim().toLowerCase()) ? 1 : 0)}
         >
-          <CommandInput placeholder="Search languages..." className="h-9 text-xs" />
+          <CommandInput placeholder="Search languages" className="h-9 text-[13px] placeholder:text-faint" />
           <CommandList className="max-h-72">
-            <CommandEmpty className="py-5 text-center text-xs text-muted-foreground">No language found.</CommandEmpty>
+            <CommandEmpty className="px-3 py-4 text-[13px] text-muted-foreground">No language matches that search.</CommandEmpty>
             {groups.map((group) => (
               <CommandGroup key={group.id} heading={group.label}>
                 {group.languages.map((lang) => (
@@ -46,11 +46,11 @@ const LanguagePicker = ({ value, onChange, title = "Language" }: LanguagePickerP
                       onChange(lang.id);
                       setOpen(false);
                     }}
-                    className="gap-2 text-xs"
+                    className="gap-2 rounded-md text-[13px]"
                   >
-                    <Check size={12} className={lang.id === value.id ? "text-primary" : "opacity-0"} />
+                    <Check size={13} className={lang.id === value.id ? "text-foreground" : "opacity-0"} aria-hidden="true" />
                     <span className="flex-1 truncate">{lang.label}</span>
-                    <span className="font-mono text-[10px] text-muted-foreground">{lang.extension}</span>
+                    <span className="font-mono text-[11px] text-faint">{lang.extension}</span>
                   </CommandItem>
                 ))}
               </CommandGroup>

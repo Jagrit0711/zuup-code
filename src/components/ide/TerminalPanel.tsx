@@ -1,20 +1,15 @@
-import {
-  Terminal as TerminalIcon,
-  Trash2,
-  Search,
-  Bug,
-  AlertCircle,
-  Play,
-  X,
-  Plus,
-  Split,
-  ChevronRight,
-  Cpu,
-} from "lucide-react";
+import { Copy, Search, Square, Trash2, X } from "lucide-react";
 import { useState, useRef, useEffect, KeyboardEvent, useCallback, useMemo } from "react";
+import { toast } from "sonner";
 import { detectNeedsStdin } from "@/lib/languages";
+import { copyToClipboard } from "@/lib/fileSystem";
+import { extractProblems, type Problem } from "@/lib/run/problems";
+import type { RunLineType } from "@/lib/run/format";
+import IconButton from "@/components/ide/panel/IconButton";
+import { cn } from "@/lib/utils";
+import { useEditorSettings } from "@/lib/editorSettings";
 
-// ─── Virtual Filesystem ────────────────────────────────────────────────────────
+// Virtual filesystem for the practice shell
 interface VFile {
   name: string;
   content: string;
@@ -29,15 +24,13 @@ function buildFS(): Record<string, VFile> {
   };
 }
 
-// ─── Terminal Line Types ───────────────────────────────────────────────────────
-type LineType = "output" | "error" | "success" | "info" | "prompt" | "stdin-prompt";
+type LineType = RunLineType;
 
 interface TermLine {
   text: string;
   type: LineType;
 }
 
-// ─── Simulated package install delay ──────────────────────────────────────────
 async function delay(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -46,18 +39,39 @@ interface TerminalProps {
   onClear: () => void;
   onCommand: (cmd: string, stdin?: string) => void;
   isRunning: boolean;
-  // Active file info so terminal can detect stdin needs
+  /** Active file info so the terminal can detect stdin needs. */
   fileContent?: string;
   fileLang?: string;
-  // False when no file is open, so "run" can say so instead of pretending to execute something
+  /** False when no file is open, so "run" can say so instead of pretending to execute something. */
   hasActiveFile?: boolean;
-  // Lets parent push execution results directly into terminal lines
+  /** Lines pushed by the parent (run start, run results). Each new array is appended. */
   externalLines?: TermLine[];
-  // Trigger from parent (e.g. Run button) when code requires stdin
+  /** Changes when the Run button needs stdin collected in the terminal. */
   requestStdin?: number;
+  /** When provided, a Stop button appears while running and Ctrl+C stops the run. */
+  onStop?: () => void;
+  /** When provided, problems with a line number become links to that line. */
+  onRevealProblem?: (problem: Problem) => void;
+  /** Switches to `tab` whenever `nonce` changes (e.g. the status bar's Problems item). */
+  requestTab?: { tab: PanelTab; nonce: number };
 }
 
-export type PanelTab = "terminal" | "output" | "debugger" | "problems";
+export type PanelTab = "terminal" | "output" | "problems";
+
+const LINE_CLASS: Record<LineType, string> = {
+  output: "text-foreground/85",
+  error: "text-danger",
+  success: "text-success",
+  warning: "text-warning",
+  info: "text-muted-foreground",
+  prompt: "text-foreground",
+  "stdin-prompt": "text-warning",
+};
+
+const WELCOME: TermLine[] = [
+  { text: "Type help to see commands, or run to run the open file.", type: "info" },
+  { text: "", type: "output" },
+];
 
 const TerminalPanel = ({
   onClear,
@@ -68,10 +82,15 @@ const TerminalPanel = ({
   hasActiveFile = true,
   externalLines,
   requestStdin,
+  onStop,
+  onRevealProblem,
+  requestTab,
 }: TerminalProps) => {
+  const { settings } = useEditorSettings();
+  const bodyStyle = { fontSize: `${settings.terminalFontSize}px` };
   const [panelTab, setPanelTab] = useState<PanelTab>("terminal");
   const [filterQuery, setFilterQuery] = useState("");
-  const [activeProcess, setActiveProcess] = useState<"zsh" | "node">("zsh");
+  const [filterOpen, setFilterOpen] = useState(false);
   const [input, setInput] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -81,11 +100,11 @@ const TerminalPanel = ({
   const [cwd, setCwd] = useState("/home/user");
 
   // Terminal display lines
-  const [lines, setLines] = useState<TermLine[]>([
-    { text: "Zuup Code Terminal v2.0 — Enhanced Shell", type: "success" },
-    { text: "Type 'help' to see available commands.", type: "info" },
-    { text: "", type: "output" },
-  ]);
+  const [lines, setLines] = useState<TermLine[]>(WELCOME);
+  // Program output only (what the Output tab shows)
+  const [runLines, setRunLines] = useState<TermLine[]>([]);
+  // Most recent batch from the parent; Problems are read from it
+  const [lastBatch, setLastBatch] = useState<TermLine[]>([]);
 
   // Stdin collection mode: when a program needs input
   const [stdinMode, setStdinMode] = useState(false);
@@ -96,43 +115,54 @@ const TerminalPanel = ({
   // Package install simulation
   const [isInstalling, setIsInstalling] = useState(false);
 
-  const outputRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
+  const outputRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const filterRef = useRef<HTMLInputElement>(null);
   const fsRef = useRef(fs);
   const cwdRef = useRef(cwd);
   useEffect(() => { fsRef.current = fs; }, [fs]);
   useEffect(() => { cwdRef.current = cwd; }, [cwd]);
 
-  // Auto-scroll
+  // Keep the newest line in view
   useEffect(() => {
-    if (terminalRef.current) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-    }
-  }, [lines]);
+    if (terminalRef.current) terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+  }, [lines, panelTab]);
+  useEffect(() => {
+    if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight;
+  }, [runLines, panelTab]);
 
-  // Auto-refocus input after execution finishes
+  // Refocus the prompt after a run or install finishes
   useEffect(() => {
-    if (!isRunning && !isInstalling && inputRef.current) {
-      // Small delay so the disabled state clears first
-      const t = setTimeout(() => inputRef.current?.focus(), 50);
+    if (!isRunning && !isInstalling && inputRef.current && panelTab === "terminal") {
+      const t = setTimeout(() => inputRef.current?.focus({ preventScroll: true }), 50);
       return () => clearTimeout(t);
     }
-  }, [isRunning, isInstalling]);
+  }, [isRunning, isInstalling, panelTab]);
 
-  // Receive external output lines (e.g. after code execution)
+  // Receive lines from the parent (run start and results)
   useEffect(() => {
     if (externalLines && externalLines.length > 0) {
       setLines((prev) => [...prev, ...externalLines, { text: "", type: "output" }]);
+      setRunLines((prev) => [...prev, ...externalLines, { text: "", type: "output" }]);
+      setLastBatch(externalLines);
     }
   }, [externalLines]);
 
-  // Handle requestStdin trigger from parent (Run button)
+  // Parent asked for a specific tab
+  const requestNonce = requestTab?.nonce;
+  const requestedTab = requestTab?.tab;
+  useEffect(() => {
+    if (requestNonce !== undefined && requestedTab) setPanelTab(requestedTab);
+  }, [requestNonce, requestedTab]);
+
+  // Run button asked for stdin
   useEffect(() => {
     if (requestStdin) {
+      setPanelTab("terminal");
       setStdinMode(true);
       setStdinBuffer([]);
-      setStdinPromptText("[stdin] >");
+      setStdinPromptText("input >");
       setPendingCode({ code: "__stdin-run__", lang: "__stdin-run__" });
       setTimeout(() => inputRef.current?.focus(), 60);
     }
@@ -142,7 +172,7 @@ const TerminalPanel = ({
     setLines((prev) => [...prev, ...newLines]);
   }, []);
 
-  // ─── Path helpers ────────────────────────────────────────────────────────────
+  // Path helpers
   function resolvePath(target: string, base: string): string {
     if (target.startsWith("/")) return normPath(target);
     if (target === "..") {
@@ -174,7 +204,7 @@ const TerminalPanel = ({
       .map(([, v]) => v);
   }
 
-  // ─── Download a virtual file ──────────────────────────────────────────────
+  // Download a virtual file
   function downloadVFile(name: string, content: string) {
     const ext = name.split(".").pop()?.toLowerCase();
     const mimeMap: Record<string, string> = {
@@ -195,7 +225,7 @@ const TerminalPanel = ({
     URL.revokeObjectURL(url);
   }
 
-  // ─── Simulated package install ────────────────────────────────────────────
+  // Simulated package install
   async function simulateInstall(manager: string, packages: string[]) {
     setIsInstalling(true);
     const pkgList = packages.join(" ");
@@ -234,14 +264,14 @@ const TerminalPanel = ({
       );
       await delay(500);
       pushLines(
-        { text: `✓ Done!`, type: "success" },
+        { text: "Done", type: "success" },
         { text: "", type: "output" },
       );
     }
     setIsInstalling(false);
   }
 
-  // ─── Core command processor ───────────────────────────────────────────────
+  // Core command processor
   async function processCommand(rawCmd: string) {
     const trimmed = rawCmd.trim();
     if (!trimmed) return;
@@ -263,7 +293,7 @@ const TerminalPanel = ({
     const args = shellSplit(trimmed);
     const cmd = args[0]?.toLowerCase() || "";
 
-    // ── built-ins ────────────────────────────────────────────────────────────
+    // built-ins
     if (cmd === "clear" || cmd === "cls") {
       setLines([]);
       return;
@@ -271,7 +301,7 @@ const TerminalPanel = ({
 
     if (cmd === "help") {
       pushLines(
-        { text: "─── File System ───────────────────────────────", type: "info" },
+        { text: "Files", type: "info" },
         { text: "  ls [path]              List directory contents", type: "output" },
         { text: "  pwd                    Print working directory", type: "output" },
         { text: "  cd <path>              Change directory", type: "output" },
@@ -286,13 +316,13 @@ const TerminalPanel = ({
         { text: "  download <file>        Download a virtual file to your computer", type: "output" },
         { text: "  csv <file>             Create a sample CSV file", type: "output" },
         { text: "", type: "output" },
-        { text: "─── Packages ──────────────────────────────────", type: "info" },
+        { text: "Packages (simulated, nothing is installed)", type: "info" },
         { text: "  pip install <pkg>      Install Python package (simulated)", type: "output" },
         { text: "  npm install <pkg>      Install Node package (simulated)", type: "output" },
         { text: "  yarn add <pkg>         Install with Yarn (simulated)", type: "output" },
         { text: "  bun add <pkg>          Install with Bun (simulated)", type: "output" },
         { text: "", type: "output" },
-        { text: "─── Utilities ─────────────────────────────────", type: "info" },
+        { text: "Other", type: "info" },
         { text: "  echo <text>            Print text", type: "output" },
         { text: "  date                   Current date/time", type: "output" },
         { text: "  whoami                 Current user", type: "output" },
@@ -322,14 +352,14 @@ const TerminalPanel = ({
     }
 
     if (cmd === "version") {
-      pushLines({ text: "Zuup Code v2.0.0", type: "output" }, { text: "", type: "output" });
+      pushLines({ text: "Zuup Code in the browser. Programs run on a remote code runner.", type: "output" }, { text: "", type: "output" });
       return;
     }
 
     if (cmd === "history") {
       const hist = history;
       if (hist.length === 0) {
-        pushLines({ text: "(no history)", type: "info" });
+        pushLines({ text: "No commands yet", type: "info" });
       } else {
         hist.forEach((h, i) => {
           pushLines({ text: `  ${String(i + 1).padStart(3, " ")}  ${h}`, type: "output" });
@@ -348,7 +378,7 @@ const TerminalPanel = ({
       if (rest) {
         // User typed "run <input>", e.g. "run 42" or "run 10 20"
         pushLines(
-          { text: `▶ Running active file with input: ${rest}`, type: "info" }
+          { text: `Running the open file with input: ${rest}`, type: "info" }
         );
         onCommand("run-with-stdin:" + btoa(unescape(encodeURIComponent(rest + "\n"))));
         return;
@@ -358,18 +388,18 @@ const TerminalPanel = ({
       const needsStdin = detectNeedsStdin(fileContent, fileLang);
       if (needsStdin) {
         pushLines(
-          { text: "⌨ Program waiting for input (scanf / input()).", type: "info" },
-          { text: "Type input below and press Enter (or Shift+Enter for multiple lines):", type: "stdin-prompt" },
+          { text: "This program reads input.", type: "info" },
+          { text: "Type the input and press Enter. Shift+Enter adds another line.", type: "stdin-prompt" },
         );
         setStdinMode(true);
         setStdinBuffer([]);
-        setStdinPromptText("[stdin] >");
+        setStdinPromptText("input >");
         setPendingCode({ code: "__stdin-run__", lang: "__stdin-run__" });
         return;
       }
 
       onCommand("run");
-      pushLines({ text: "▶ Running active file…", type: "info" }, { text: "", type: "output" });
+      pushLines({ text: "Running the open file", type: "info" });
       return;
     }
 
@@ -380,16 +410,16 @@ const TerminalPanel = ({
         return;
       }
       pushLines(
-        { text: "📥 Enter program input below and press Enter (Shift+Enter for multiple lines, Ctrl+C to cancel):", type: "info" },
+        { text: "Type the program input and press Enter. Shift+Enter adds another line, Ctrl+C cancels.", type: "info" },
       );
       setStdinMode(true);
       setStdinBuffer([]);
-      setStdinPromptText("[stdin] >");
+      setStdinPromptText("input >");
       setPendingCode({ code: "__stdin-run__", lang: "__stdin-run__" });
       return;
     }
 
-    // ── echo ─────────────────────────────────────────────────────────────────
+    // echo
     if (cmd === "echo") {
       const rest = trimmed.slice(5);
       const redirIdx = rest.lastIndexOf(">");
@@ -402,7 +432,7 @@ const TerminalPanel = ({
           [fullPath]: { name: basename(fullPath), content: text + "\n", type: "file" },
         }));
         pushLines(
-          { text: `✓ Written to ${fileName}`, type: "success" },
+          { text: `Wrote ${fileName}`, type: "success" },
           { text: "", type: "output" },
         );
       } else {
@@ -412,7 +442,7 @@ const TerminalPanel = ({
       return;
     }
 
-    // ── ls ───────────────────────────────────────────────────────────────────
+    // ls
     if (cmd === "ls" || cmd === "dir") {
       const targetPath = args[1] ? resolvePath(args[1], currentCwd) : currentCwd;
       if (!currentFs[targetPath] || currentFs[targetPath].type !== "dir") {
@@ -424,12 +454,8 @@ const TerminalPanel = ({
       }
       const entries = listDir(targetPath, currentFs);
       if (entries.length === 0) {
-        pushLines({ text: "(empty)", type: "info" }, { text: "", type: "output" });
+        pushLines({ text: "Empty", type: "info" }, { text: "", type: "output" });
       } else {
-        const row = entries
-          .map((e) => (e.type === "dir" ? `\u001b[34m${e.name}/\u001b[0m` : e.name))
-          .join("   ");
-        // Since we can't do real ansi in react, let's just prefix dirs
         const parts = entries.map((e) =>
           e.type === "dir"
             ? { text: e.name + "/", type: "info" as LineType }
@@ -446,7 +472,7 @@ const TerminalPanel = ({
       return;
     }
 
-    // ── cd ───────────────────────────────────────────────────────────────────
+    // cd
     if (cmd === "cd") {
       const target = args[1] || "/home/user";
       const resolved = target === "~" ? "/home/user" : resolvePath(target, currentCwd);
@@ -463,7 +489,7 @@ const TerminalPanel = ({
       return;
     }
 
-    // ── mkdir ────────────────────────────────────────────────────────────────
+    // mkdir
     if (cmd === "mkdir") {
       if (!args[1]) {
         pushLines({ text: "mkdir: missing operand", type: "error" }, { text: "", type: "output" });
@@ -478,7 +504,7 @@ const TerminalPanel = ({
       return;
     }
 
-    // ── touch ────────────────────────────────────────────────────────────────
+    // touch
     if (cmd === "touch") {
       if (!args[1]) {
         pushLines({ text: "touch: missing file operand", type: "error" }, { text: "", type: "output" });
@@ -491,11 +517,11 @@ const TerminalPanel = ({
           [fullPath]: { name: basename(fullPath), content: "", type: "file" },
         }));
       }
-      pushLines({ text: `✓ Created ${args[1]}`, type: "success" }, { text: "", type: "output" });
+      pushLines({ text: `Created ${args[1]}`, type: "success" }, { text: "", type: "output" });
       return;
     }
 
-    // ── cat ──────────────────────────────────────────────────────────────────
+    // cat
     if (cmd === "cat") {
       if (!args[1]) {
         pushLines({ text: "cat: missing file operand", type: "error" }, { text: "", type: "output" });
@@ -513,7 +539,7 @@ const TerminalPanel = ({
       return;
     }
 
-    // ── rm ───────────────────────────────────────────────────────────────────
+    // rm
     if (cmd === "rm") {
       if (!args[1]) {
         pushLines({ text: "rm: missing operand", type: "error" }, { text: "", type: "output" });
@@ -533,7 +559,7 @@ const TerminalPanel = ({
       return;
     }
 
-    // ── cp ───────────────────────────────────────────────────────────────────
+    // cp
     if (cmd === "cp") {
       if (!args[1] || !args[2]) {
         pushLines({ text: "Usage: cp <source> <destination>", type: "error" }, { text: "", type: "output" });
@@ -550,11 +576,11 @@ const TerminalPanel = ({
         ...prev,
         [dstPath]: { name: basename(dstPath), content: srcFile.content, type: "file" },
       }));
-      pushLines({ text: `Copied '${args[1]}' → '${args[2]}'`, type: "success" }, { text: "", type: "output" });
+      pushLines({ text: `Copied ${args[1]} to ${args[2]}`, type: "success" }, { text: "", type: "output" });
       return;
     }
 
-    // ── mv ───────────────────────────────────────────────────────────────────
+    // mv
     if (cmd === "mv") {
       if (!args[1] || !args[2]) {
         pushLines({ text: "Usage: mv <source> <destination>", type: "error" }, { text: "", type: "output" });
@@ -573,11 +599,11 @@ const TerminalPanel = ({
         next[dstPath] = { name: basename(dstPath), content: srcFile.content, type: srcFile.type };
         return next;
       });
-      pushLines({ text: `Moved '${args[1]}' → '${args[2]}'`, type: "success" }, { text: "", type: "output" });
+      pushLines({ text: `Moved ${args[1]} to ${args[2]}`, type: "success" }, { text: "", type: "output" });
       return;
     }
 
-    // ── write (multi-line into file) ─────────────────────────────────────────
+    // write (multi-line into file)
     if (cmd === "write") {
       if (!args[1]) {
         pushLines({ text: "Usage: write <filename>", type: "error" }, { text: "", type: "output" });
@@ -595,7 +621,7 @@ const TerminalPanel = ({
       return;
     }
 
-    // ── download ─────────────────────────────────────────────────────────────
+    // download
     if (cmd === "download") {
       if (!args[1]) {
         pushLines({ text: "Usage: download <filename>", type: "error" }, { text: "", type: "output" });
@@ -609,13 +635,13 @@ const TerminalPanel = ({
       }
       downloadVFile(file.name, file.content);
       pushLines(
-        { text: `⬇ Downloading '${args[1]}' to your computer…`, type: "success" },
+        { text: `Downloading ${args[1]}`, type: "success" },
         { text: "", type: "output" },
       );
       return;
     }
 
-    // ── csv <filename> — create a sample CSV ──────────────────────────────────
+    // csv <filename> — create a sample CSV
     if (cmd === "csv") {
       const fileName = args[1] || "data.csv";
       const fullPath = resolvePath(fileName, currentCwd);
@@ -630,14 +656,14 @@ const TerminalPanel = ({
         [fullPath]: { name: basename(fullPath), content: sample, type: "file" },
       }));
       pushLines(
-        { text: `✓ Created '${fileName}' with sample CSV data (5 rows, 4 columns)`, type: "success" },
-        { text: `  Tip: type 'cat ${fileName}' to view, 'download ${fileName}' to save`, type: "info" },
+        { text: `Created ${fileName} with sample data (5 rows, 4 columns)`, type: "success" },
+        { text: `cat ${fileName} to view it, download ${fileName} to save it`, type: "info" },
         { text: "", type: "output" },
       );
       return;
     }
 
-    // ── pip install ───────────────────────────────────────────────────────────
+    // pip install
     if (cmd === "pip" && args[1] === "install") {
       const pkgs = args.slice(2);
       if (pkgs.length === 0) {
@@ -648,7 +674,7 @@ const TerminalPanel = ({
       return;
     }
 
-    // ── npm / yarn / bun install ─────────────────────────────────────────────
+    // npm / yarn / bun install
     if ((cmd === "npm" && (args[1] === "install" || args[1] === "i")) ||
         (cmd === "yarn" && args[1] === "add") ||
         (cmd === "bun" && args[1] === "add")) {
@@ -661,7 +687,7 @@ const TerminalPanel = ({
       return;
     }
 
-    // ── Unrecognised command ──────────────────────────────────────────────────
+    // Unrecognised command
     pushLines(
       { text: `zsh: command not found: ${cmd}`, type: "error" },
       { text: `Type 'help' to see available commands.`, type: "info" },
@@ -669,7 +695,7 @@ const TerminalPanel = ({
     );
   }
 
-  // ─── Shell argument splitter (handles quoted strings) ────────────────────────
+  // Shell argument splitter (handles quoted strings)
   function shellSplit(input: string): string[] {
     const args: string[] = [];
     let current = "";
@@ -691,7 +717,7 @@ const TerminalPanel = ({
     return args;
   }
 
-  // ─── Key handler ────────────────────────────────────────────────────────────
+  // Key handler
   const handleKey = async (e: KeyboardEvent<HTMLInputElement>) => {
     // Multi-line stdin support: Shift+Enter queues line in buffer
     if (e.key === "Enter" && e.shiftKey && stdinMode) {
@@ -700,7 +726,7 @@ const TerminalPanel = ({
       setInput("");
       pushLines({ text: `${stdinPromptText} ${val}`, type: "stdin-prompt" });
       setStdinBuffer((prev) => [...prev, val]);
-      setStdinPromptText(`[stdin:L${stdinBuffer.length + 2}] >`);
+      setStdinPromptText(`input ${stdinBuffer.length + 2} >`);
       return;
     }
 
@@ -708,7 +734,7 @@ const TerminalPanel = ({
       const val = input;
       setInput("");
 
-      // ── Stdin collection mode ──────────────────────────────────────────────
+      // Stdin collection mode
       if (stdinMode && pendingCode) {
         if (pendingCode.lang === "__write__") {
           const trimmedVal = val.trim();
@@ -721,8 +747,8 @@ const TerminalPanel = ({
               [fullPath]: { name: basename(fullPath), content, type: "file" },
             }));
             pushLines(
-              { text: `✓ Saved ${fileName} (${stdinBuffer.length} lines)`, type: "success" },
-              { text: `  Tip: 'cat ${fileName}' to view, 'download ${fileName}' to save`, type: "info" },
+              { text: `Saved ${fileName} (${stdinBuffer.length} lines)`, type: "success" },
+              { text: `cat ${fileName} to view it, download ${fileName} to save it`, type: "info" },
               { text: "", type: "output" },
             );
             setStdinMode(false);
@@ -748,7 +774,7 @@ const TerminalPanel = ({
               ? ""
               : finalStdin + "\n";
 
-          pushLines({ text: "▶ Executing with input…", type: "info" });
+          pushLines({ text: "Running with this input", type: "info" });
           onCommand("run-with-stdin:" + btoa(unescape(encodeURIComponent(stdinToSend))));
 
           setStdinMode(false);
@@ -758,7 +784,7 @@ const TerminalPanel = ({
         }
       }
 
-      // ── Normal command ─────────────────────────────────────────────────────
+      // Normal command
       if (val.trim()) await processCommand(val.trim());
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
@@ -807,228 +833,296 @@ const TerminalPanel = ({
         setStdinMode(false);
         setStdinBuffer([]);
         setPendingCode(null);
-        pushLines({ text: "^C (input cancelled)", type: "error" }, { text: "", type: "output" });
+        pushLines({ text: "^C  input cancelled", type: "error" }, { text: "", type: "output" });
       }
     }
   };
+  const matchesFilter = useCallback(
+    (l: TermLine) => !filterQuery.trim() || l.text.toLowerCase().includes(filterQuery.trim().toLowerCase()),
+    [filterQuery]
+  );
+  const filteredLines = useMemo(() => lines.filter(matchesFilter), [lines, matchesFilter]);
+  const filteredRunLines = useMemo(() => runLines.filter(matchesFilter), [runLines, matchesFilter]);
 
-  // ─── Line color mapping ──────────────────────────────────────────────────────
-  function lineClass(type: LineType): string {
-    switch (type) {
-      case "error": return "text-destructive";
-      case "success": return "text-emerald-400";
-      case "info": return "text-sky-400";
-      case "prompt": return "text-violet-400 font-medium";
-      case "stdin-prompt": return "text-amber-400";
-      default: return "text-foreground/80";
+  const problems = useMemo(
+    // Tracebacks mix error-coloured and plain lines, so read the whole batch once a run has failed.
+    () =>
+      lastBatch.some((l) => l.type === "error")
+        ? extractProblems(lastBatch.map((l) => l.text).join("\n"))
+        : [],
+    [lastBatch]
+  );
+  const errorCount = problems.filter((p) => p.severity === "error").length;
+
+  const visibleText = (panelTab === "output" ? filteredRunLines : filteredLines).map((l) => l.text).join("\n").trim();
+
+  const handleCopy = async () => {
+    const text =
+      panelTab === "problems"
+        ? problems.map((p) => `${p.line ? `${p.file ?? ""}:${p.line}${p.column ? `:${p.column}` : ""} ` : ""}${p.message}`).join("\n")
+        : visibleText;
+    if (!text) return;
+    try {
+      await copyToClipboard(text);
+      toast.success(panelTab === "problems" ? "Problems copied" : "Output copied");
+    } catch {
+      toast.error("Could not copy. Select the text and copy it instead.");
     }
-  }
+  };
 
-  const filteredLines = useMemo(() => {
-    if (!filterQuery.trim()) return lines;
-    const q = filterQuery.toLowerCase();
-    return lines.filter((l) => l.text.toLowerCase().includes(q));
-  }, [lines, filterQuery]);
+  const handleClear = () => {
+    setLines([]);
+    setRunLines([]);
+    setLastBatch([]);
+    onClear();
+  };
 
-  const outputOnlyLines = useMemo(() => {
-    return filteredLines.filter((l) => l.type === "output" || l.type === "error" || l.type === "success" || l.type === "info");
-  }, [filteredLines]);
+  const tabs: { id: PanelTab; label: string; count?: number }[] = [
+    { id: "terminal", label: "Terminal" },
+    { id: "output", label: "Output" },
+    { id: "problems", label: "Problems", count: problems.length },
+  ];
 
-  const promptLabel = stdinMode
-    ? stdinPromptText
-    : `${cwd} $`;
+  const status = isRunning ? "Running" : isInstalling ? "Installing" : stdinMode ? "Waiting for input" : "";
 
   return (
-    <div className="flex h-full flex-col liquid-glass border-t border-white/[0.08] select-none">
-      {/* ─── Header: Multi-Tabs + Filter + Actions ─── */}
-      <div className="flex items-center justify-between border-b border-white/[0.06] px-2.5 py-1 bg-white/[0.02] shrink-0 text-xs font-mono">
-        {/* Left: Tab Switches */}
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => setPanelTab("terminal")}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
-              panelTab === "terminal"
-                ? "bg-white/[0.08] text-foreground border border-white/[0.1] shadow-sm"
-                : "text-muted-foreground/70 hover:text-foreground hover:bg-white/[0.04]"
-            }`}
-          >
-            <TerminalIcon size={12} className={panelTab === "terminal" ? "text-primary" : ""} />
-            <span>Terminal</span>
-            {stdinMode && (
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
-            )}
-          </button>
+    <div
+      className="flex h-full flex-col border-t border-rule bg-ink"
+      onKeyDown={(e) => {
+        // Ctrl+C stops a run when nothing is selected (so copying still works).
+        if (isRunning && onStop && e.ctrlKey && e.key === "c" && !window.getSelection()?.toString()) {
+          e.preventDefault();
+          onStop();
+        }
+      }}
+    >
+      {/* Tabs and actions */}
+      <div className="flex h-8 shrink-0 select-none items-stretch justify-between gap-2 border-b border-rule pl-1 pr-1.5">
+        <div role="tablist" aria-label="Bottom panel" className="flex items-stretch">
+          {tabs.map((tab) => {
+            const active = panelTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                role="tab"
+                type="button"
+                aria-selected={active}
+                aria-controls={`panel-${tab.id}`}
+                onClick={() => setPanelTab(tab.id)}
+                className={cn(
+                  "relative flex items-center px-2.5 text-[12px] transition-colors duration-150",
+                  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary",
+                  active ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {tab.label}
+                {tab.count !== undefined && tab.count > 0 && (
+                  <span
+                    className={cn(
+                      "ml-1.5 tabular-nums",
+                      tab.id === "problems" && errorCount > 0 ? "text-danger" : "text-faint"
+                    )}
+                    aria-label={`${tab.count} ${tab.count === 1 ? "problem" : "problems"}`}
+                  >
+                    {tab.count}
+                  </span>
+                )}
+                <span
+                  aria-hidden
+                  className={cn(
+                    "absolute inset-x-2.5 bottom-0 h-px transition-colors duration-150",
+                    active ? "bg-foreground" : "bg-transparent"
+                  )}
+                />
+              </button>
+            );
+          })}
 
-          <button
-            onClick={() => setPanelTab("output")}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
-              panelTab === "output"
-                ? "bg-white/[0.08] text-foreground border border-white/[0.1] shadow-sm"
-                : "text-muted-foreground/70 hover:text-foreground hover:bg-white/[0.04]"
-            }`}
-          >
-            <span>Output</span>
-          </button>
-
-          <button
-            onClick={() => setPanelTab("debugger")}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
-              panelTab === "debugger"
-                ? "bg-white/[0.08] text-foreground border border-white/[0.1] shadow-sm"
-                : "text-muted-foreground/70 hover:text-foreground hover:bg-white/[0.04]"
-            }`}
-          >
-            <Bug size={11} className={panelTab === "debugger" ? "text-primary" : ""} />
-            <span>Debugger</span>
-          </button>
-
-          <button
-            onClick={() => setPanelTab("problems")}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
-              panelTab === "problems"
-                ? "bg-white/[0.08] text-foreground border border-white/[0.1] shadow-sm"
-                : "text-muted-foreground/70 hover:text-foreground hover:bg-white/[0.04]"
-            }`}
-          >
-            <AlertCircle size={11} className={panelTab === "problems" ? "text-primary" : ""} />
-            <span>Problems</span>
-            <span className="rounded-full bg-white/[0.08] px-1.5 text-[9px] text-muted-foreground">0</span>
-          </button>
-
-          {isRunning && (
-            <span className="flex items-center gap-1 text-[10px] text-emerald-400 font-mono ml-2">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
-              running
-            </span>
-          )}
-          {isInstalling && (
-            <span className="flex items-center gap-1 text-[10px] text-amber-400 font-mono ml-2">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
-              installing
+          {status && (
+            <span className="ml-3 flex items-center gap-1.5 text-[12px] text-muted-foreground" role="status">
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full motion-safe:animate-pulse",
+                  isRunning ? "bg-success" : "bg-warning"
+                )}
+              />
+              {status}
             </span>
           )}
         </div>
 
-        {/* Right: Process Pill + Filter Input + Controls */}
-        <div className="flex items-center gap-2">
-          {/* Active Process Selector */}
-          <div className="hidden sm:flex items-center gap-1 bg-white/[0.04] border border-white/[0.06] rounded-md px-1.5 py-0.5 text-[10px]">
-            <Cpu size={10} className="text-primary/70" />
-            <select
-              value={activeProcess}
-              onChange={(e) => setActiveProcess(e.target.value as "zsh" | "node")}
-              className="bg-transparent text-muted-foreground hover:text-foreground outline-none cursor-pointer text-[10px]"
+        <div className="flex items-center gap-0.5">
+          {isRunning && onStop && (
+            <button
+              type="button"
+              onClick={onStop}
+              className="mr-1 flex h-6 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted-foreground transition-colors hover:bg-raised hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
             >
-              <option value="zsh" className="bg-[#0f121d]">1: zsh</option>
-              <option value="node" className="bg-[#0f121d]">2: node</option>
-            </select>
-          </div>
+              <Square size={10} className="fill-current" aria-hidden />
+              Stop
+              <span className="font-mono text-[11px] text-faint">Ctrl+C</span>
+            </button>
+          )}
 
-          {/* Filter Search Input */}
-          <div className="flex items-center gap-1 rounded-md bg-white/[0.04] border border-white/[0.08] px-2 py-0.5 text-[10px] focus-within:border-primary/50">
-            <Search size={10} className="text-muted-foreground/60 shrink-0" />
-            <input
-              type="text"
-              value={filterQuery}
-              onChange={(e) => setFilterQuery(e.target.value)}
-              placeholder="Filter..."
-              className="w-16 sm:w-24 bg-transparent outline-none text-foreground placeholder:text-muted-foreground/40 font-mono"
-            />
-            {filterQuery && (
-              <button onClick={() => setFilterQuery("")} className="text-muted-foreground hover:text-foreground">
-                <X size={10} />
-              </button>
-            )}
-          </div>
+          {panelTab !== "problems" &&
+            (filterOpen || filterQuery ? (
+              <div className="mr-1 flex h-6 items-center gap-1 rounded-md border border-rule bg-ink px-1.5 focus-within:border-primary/60">
+                <Search size={12} className="shrink-0 text-faint" aria-hidden />
+                <input
+                  ref={filterRef}
+                  type="text"
+                  value={filterQuery}
+                  onChange={(e) => setFilterQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      setFilterQuery("");
+                      setFilterOpen(false);
+                    }
+                  }}
+                  onBlur={() => !filterQuery && setFilterOpen(false)}
+                  autoFocus
+                  placeholder="Filter lines"
+                  aria-label="Filter lines"
+                  className="w-24 bg-transparent text-[12px] text-foreground outline-none placeholder:text-faint sm:w-32"
+                />
+                {filterQuery && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFilterQuery("");
+                      filterRef.current?.focus();
+                    }}
+                    aria-label="Clear filter"
+                    className="rounded text-faint hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+            ) : (
+              <IconButton label="Filter lines" onClick={() => setFilterOpen(true)}>
+                <Search size={13} />
+              </IconButton>
+            ))}
 
-          {/* Clear button */}
-          <button
-            onClick={() => {
-              setLines([]);
-              onClear();
-            }}
-            className="rounded p-1 text-muted-foreground transition-colors hover:bg-white/[0.08] hover:text-foreground"
-            title="Clear terminal output"
+          <IconButton
+            label={panelTab === "problems" ? "Copy problems" : "Copy output"}
+            onClick={handleCopy}
+            disabled={panelTab === "problems" ? problems.length === 0 : !visibleText}
           >
-            <Trash2 size={12} />
-          </button>
+            <Copy size={13} />
+          </IconButton>
+          <IconButton label="Clear" onClick={handleClear}>
+            <Trash2 size={13} />
+          </IconButton>
         </div>
       </div>
 
-      {/* ─── Body based on active panelTab ─── */}
+      {/* Body */}
       {panelTab === "problems" ? (
-        <div className="flex-1 p-4 text-xs font-mono text-muted-foreground flex flex-col items-center justify-center space-y-2">
-          <AlertCircle size={24} className="text-emerald-400/50" />
-          <p className="text-foreground/90 font-medium">No problems have been detected in the workspace.</p>
-          <p className="text-[11px] text-muted-foreground/60">Syntax diagnostics and compiler warnings will appear here.</p>
-        </div>
-      ) : panelTab === "debugger" ? (
-        <div className="flex-1 p-3 text-xs font-mono grid grid-cols-1 sm:grid-cols-3 gap-2 overflow-y-auto">
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5 space-y-1">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">Variables</span>
-            <p className="text-[11px] text-muted-foreground/70">No variables in scope. Run program to capture locals.</p>
-          </div>
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5 space-y-1">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">Call Stack</span>
-            <p className="text-[11px] text-muted-foreground/70">Not paused on breakpoint. Main thread active.</p>
-          </div>
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5 space-y-1">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">Breakpoints</span>
-            <p className="text-[11px] text-muted-foreground/70">Click gutter in Monaco editor to add breakpoints.</p>
-          </div>
+        <div id="panel-problems" role="tabpanel" className="flex-1 overflow-y-auto py-1" style={bodyStyle}>
+          {problems.length === 0 ? (
+            <p className="px-3 py-2 text-muted-foreground">
+              {lastBatch.some((l) => l.type === "error")
+                ? "The last run failed, but the error does not point at a line. See Output for the full message."
+                : "No problems in the last run."}
+            </p>
+          ) : (
+            <ul>
+              {problems.map((p, i) => {
+                const location = p.line ? `Ln ${p.line}${p.column ? `, Col ${p.column}` : ""}` : "";
+                const clickable = !!onRevealProblem && !!p.line;
+                const content = (
+                  <>
+                    <span className={cn("w-16 shrink-0", p.severity === "error" ? "text-danger" : "text-warning")}>
+                      {p.severity === "error" ? "Error" : "Warning"}
+                    </span>
+                    <span className="w-28 shrink-0 truncate text-[0.92em] text-faint" title={p.file}>
+                      {location}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-[0.92em] text-foreground/90" title={p.message}>
+                      {p.message}
+                    </span>
+                  </>
+                );
+                return (
+                  <li key={i}>
+                    {clickable ? (
+                      <button
+                        type="button"
+                        onClick={() => onRevealProblem?.(p)}
+                        className="flex w-full items-baseline gap-3 px-3 py-1 text-left transition-colors hover:bg-raised focus-visible:bg-raised focus-visible:outline-none"
+                      >
+                        {content}
+                      </button>
+                    ) : (
+                      <div className="flex items-baseline gap-3 px-3 py-1">{content}</div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
       ) : panelTab === "output" ? (
-        <div className="flex-1 overflow-y-auto p-3 font-mono text-xs">
-          {outputOnlyLines.length === 0 ? (
-            <p className="text-muted-foreground/50 py-4 text-center">No execution output recorded yet.</p>
+        <div
+          id="panel-output"
+          role="tabpanel"
+          ref={outputRef}
+          className="flex-1 overflow-y-auto px-3 py-2 font-mono leading-[1.6]"
+          style={bodyStyle}
+        >
+          {filteredRunLines.length === 0 ? (
+            <p className="font-sans text-[13px] text-muted-foreground">
+              {filterQuery ? "No lines match the filter." : "Run a file to see its output here."}
+            </p>
           ) : (
-            outputOnlyLines.map((line, i) => (
-              <div key={i} className={`leading-relaxed whitespace-pre-wrap ${lineClass(line.type)}`}>
-                {line.text || "\u00A0"}
+            filteredRunLines.map((line, i) => (
+              <div key={i} className={cn("whitespace-pre-wrap break-words", LINE_CLASS[line.type])}>
+                {line.text || " "}
               </div>
             ))
           )}
         </div>
       ) : (
-        /* Interactive Shell Terminal */
         <div
+          id="panel-terminal"
+          role="tabpanel"
           ref={terminalRef}
-          className="flex-1 overflow-y-auto p-3 font-mono text-xs"
-          onClick={() => inputRef.current?.focus()}
+          className="flex-1 cursor-text overflow-y-auto px-3 py-2 font-mono leading-[1.6]"
+          style={bodyStyle}
+          onClick={() => {
+            if (!window.getSelection()?.toString()) inputRef.current?.focus();
+          }}
         >
           {filteredLines.map((line, i) => (
-            <div key={i} className={`leading-relaxed whitespace-pre-wrap ${lineClass(line.type)}`}>
-              {line.text || "\u00A0"}
+            <div key={i} className={cn("whitespace-pre-wrap break-words", LINE_CLASS[line.type])}>
+              {line.type === "prompt" ? (
+                <PromptEcho text={line.text} />
+              ) : (
+                line.text || " "
+              )}
             </div>
           ))}
 
-          {/* Interactive Prompt Row */}
-          <div className="flex items-center gap-2 mt-1">
-            <span
-              className={`font-semibold shrink-0 select-none ${
-                stdinMode ? "text-amber-400 font-bold" : "text-violet-400"
-              }`}
-            >
-              {promptLabel}
+          {/* Prompt row */}
+          <div className="flex items-center gap-2">
+            <span className={cn("shrink-0 select-none", stdinMode ? "text-warning" : "text-faint")}>
+              {stdinMode ? stdinPromptText : <>{cwd.replace(/^\/home\/user/, "~")} $</>}
             </span>
             <input
               ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKey}
-              className="flex-1 bg-transparent text-foreground outline-none caret-primary min-w-0"
+              className="min-w-0 flex-1 bg-transparent text-foreground caret-primary outline-none placeholder:text-faint disabled:opacity-60"
               spellCheck={false}
               autoComplete="off"
-              autoFocus
+              autoCapitalize="off"
+              aria-label={stdinMode ? "Program input" : "Terminal command"}
               disabled={isInstalling || isRunning}
               placeholder={
-                isRunning
-                  ? "Running…"
-                  : isInstalling
-                  ? "Installing…"
-                  : stdinMode
-                  ? "Type input and press Enter"
-                  : "Type 'help' or 'run [input]'…"
+                isRunning ? "" : isInstalling ? "" : stdinMode ? "Type input and press Enter" : ""
               }
             />
           </div>
@@ -1037,5 +1131,18 @@ const TerminalPanel = ({
     </div>
   );
 };
+
+/** An echoed command: the faint path and "$", then the command itself. */
+function PromptEcho({ text }: { text: string }) {
+  const idx = text.indexOf(" $ ");
+  if (idx === -1) return <>{text}</>;
+  const path = text.slice(0, idx).replace(/^\/home\/user/, "~");
+  return (
+    <>
+      <span className="text-faint">{path} $ </span>
+      {text.slice(idx + 3)}
+    </>
+  );
+}
 
 export default TerminalPanel;

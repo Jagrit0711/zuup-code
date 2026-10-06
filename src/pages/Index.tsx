@@ -1,17 +1,21 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { useSearchParams } from "react-router-dom";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import CodeEditor from "@/components/ide/CodeEditor";
 import Sidebar, { type SidebarTab } from "@/components/ide/Sidebar";
 import ActivityBar from "@/components/ide/ActivityBar";
 import StatusBar from "@/components/ide/StatusBar";
 import TopBar from "@/components/ide/TopBar";
-import TerminalPanel from "@/components/ide/TerminalPanel";
+import TerminalPanel, { type PanelTab } from "@/components/ide/TerminalPanel";
 import HtmlPreview from "@/components/ide/HtmlPreview";
 import FileTabs from "@/components/ide/FileTabs";
 import Breadcrumbs from "@/components/ide/Breadcrumbs";
 import EditorEmptyState from "@/components/ide/EditorEmptyState";
-import SettingsModal from "@/components/ide/SettingsModal";
+import SettingsModal, { type SettingsSection } from "@/components/ide/SettingsModal";
+import CommandPalette, { type PaletteCommand, type PaletteMode } from "@/components/ide/palette/CommandPalette";
+import { shortcutFor } from "@/components/ide/palette/shortcuts";
+import { buildZip, downloadZip, zipFileName } from "@/components/ide/palette/projectZip";
 import NewProjectModal from "@/components/ide/NewProjectModal";
 import type { NewProjectData } from "@/components/ide/NewProjectModal";
 import ShareModal from "@/components/ide/ShareModal";
@@ -19,9 +23,11 @@ import GitHubDialog from "@/components/ide/github/GitHubDialog";
 import ConflictDialog from "@/components/ide/github/ConflictDialog";
 import SyncStatusIndicator from "@/components/ide/github/SyncStatusIndicator";
 import { useGitHubSync, type GitHubSync } from "@/hooks/useGitHubSync";
+import { useRunController } from "@/hooks/useRunController";
+import { combineProblemCounts, countProblems, problemsFromRunLines } from "@/hooks/problemCounts";
 import { type AppliedChange, type LocalFile, SCRATCH_PROJECT_KEY } from "@/lib/github";
 import { applyRemoteChanges, toSyncFiles, workspaceFromSyncFiles } from "@/lib/githubWorkspace";
-import { getLanguageById, detectLanguageFromFilename, detectNeedsStdin } from "@/lib/languages";
+import { getLanguageById, getLanguagesByGroup, detectLanguageFromFilename, detectNeedsStdin } from "@/lib/languages";
 import { FileTab, createFile, downloadFile } from "@/lib/fileSystem";
 import {
   type ActionResult,
@@ -56,33 +62,42 @@ import {
   saveWorkspace,
   workspaceSignature,
 } from "@/lib/workspace";
-import { useEditorSettings } from "@/lib/editorSettings";
-import { executeCode } from "@/lib/pistonApi";
+import { DEFAULT_EDITOR_SETTINGS, updateEditorSettings, useEditorSettings } from "@/lib/editorSettings";
+import { RUN_MESSAGES, executeCode } from "@/lib/pistonApi";
+import { runResultToLines, runStartLine, type RunLine } from "@/lib/run/format";
+import type { Problem } from "@/lib/run/problems";
 import { loadSharedCode, loadSharedProject, clearUrlParams } from "@/lib/sharing";
 import { recordSnapshot } from "@/lib/timelineStorage";
 import { useAuth } from "@/contexts/AuthContext";
 import { createProject, updateProject, getProject } from "@/lib/projectStorage";
 import { toast } from "sonner";
 
-// Keyboard shortcuts data
-const SHORTCUTS = [
-  { keys: "Ctrl+S", desc: "Save" },
-  { keys: "Ctrl+Enter", desc: "Run code" },
-  { keys: "Ctrl+N / Alt+N", desc: "New file" },
-  { keys: "Ctrl+Shift+N / Alt+Shift+N", desc: "New project" },
-  { keys: "Ctrl+Shift+S", desc: "Download file" },
-  { keys: "F2 / Del", desc: "Rename / delete in Explorer" },
-  { keys: "Ctrl+/", desc: "Show shortcuts" },
-  { keys: "Ctrl+Wheel", desc: "Zoom in/out" },
-];
-
-type TerminalLine = {
-  text: string;
-  type: "output" | "error" | "success" | "info" | "prompt" | "stdin-prompt";
-};
+type TerminalLine = RunLine;
 
 const SCRATCH_AUTOSAVE_MS = 500;
-const CLOUD_AUTOSAVE_MS = 3000;
+
+/** Every language in picker order, for the palette's "Change language" list. */
+const PALETTE_LANGUAGES = getLanguagesByGroup().flatMap((g) =>
+  g.languages.map((l) => ({ id: l.id, label: l.label, extension: l.extension }))
+);
+
+/** True when a key event comes from a text field outside the code editor (Monaco handles its own keys). */
+function isTypingOutsideEditor(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.closest(".monaco-editor")) return false;
+  return target.isContentEditable || !!target.closest("input, textarea, select, [contenteditable='true']");
+}
+
+/** Below 768px the sidebar overlaps most of the editor. Safe without matchMedia (jsdom, SSR). */
+function isNarrowScreen(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  return !window.matchMedia("(min-width: 768px)").matches;
+}
+
+/** True when the event happened inside an open dialog or menu (their keys belong to them). */
+function isInsideOverlay(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && !!target.closest("[role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox']");
+}
 
 /**
  * Statically scan source code + runtime output to find files
@@ -164,24 +179,6 @@ function detectCreatedFiles(
   return found;
 }
 
-function toResultLines(output: string[], success: boolean): TerminalLine[] {
-  return [
-    ...output.flatMap((line) =>
-      line.split("\n").map((l) => ({
-        text: l,
-        type: (l.startsWith("❌") || l.toLowerCase().includes("error") || l.toLowerCase().includes("traceback")
-          ? "error"
-          : "output") as "output" | "error",
-      }))
-    ),
-    { text: "", type: "output" as const },
-    {
-      text: success ? "✅ Execution completed." : "❌ Execution failed.",
-      type: success ? ("success" as const) : ("error" as const),
-    },
-  ];
-}
-
 interface ForkPayload {
   name?: string;
   files?: { fileName: string; language?: string; code: string }[];
@@ -190,7 +187,10 @@ interface ForkPayload {
 const Index = () => {
   const { user, profile, loading, signInWithZuup } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const { settings } = useEditorSettings();
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   // Enforce authentication for accessing the code editor
   useEffect(() => {
@@ -258,6 +258,8 @@ const Index = () => {
   const [isSaving, setIsSaving] = useState(false);
   // A restored scratch workspace has never been saved to a project.
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(() => (boot.restored?.files.length ?? 0) > 0);
+  const hasUnsavedChangesRef = useRef(hasUnsavedChanges);
+  hasUnsavedChangesRef.current = hasUnsavedChanges;
 
   // Refs to avoid stale closures in timers and async callbacks
   const userRef = useRef(user);
@@ -270,6 +272,8 @@ const Index = () => {
   // While the URL points at a project/share/fork that has not loaded yet, never overwrite the scratch copy.
   const autosaveBlockedRef = useRef(boot.external);
   const storageWarnedRef = useRef(false);
+  // True while the scratch workspace could not be written to browser storage (leaving would lose it).
+  const [scratchUnsafe, setScratchUnsafe] = useState(false);
   // GitHub link operations, for handlers declared before the sync hook.
   const githubRef = useRef<Pick<GitHubSync, "rekey" | "forget"> | null>(null);
   useEffect(() => { userRef.current = user; }, [user]);
@@ -297,7 +301,8 @@ const Index = () => {
   );
 
   // ── Cloud / guest-project saving ──
-  const performCloudSave = useCallback(async () => {
+  /** `quiet` saves (auto-save, save before run) only speak up when something goes wrong. */
+  const performCloudSave = useCallback(async (opts: { quiet?: boolean } = {}) => {
     if (!userRef.current) return;
     if (isSavingRef.current) {
       pendingSaveRef.current = true;
@@ -318,9 +323,9 @@ const Index = () => {
         const updated = await updateProject(currentCloudId, { files: projectFiles, language: primaryLang });
         if (updated) {
           succeeded = true;
-          toast.success("Saved to cloud");
+          if (!opts.quiet) toast.success("Saved");
         } else {
-          toast.error("Failed to save. Your changes are still in the editor.");
+          toast.error("Could not save. Your changes are still in the editor; try saving again.");
         }
       } else {
         const name = projectNameRef.current || snapshotFiles[0]?.name || "Untitled";
@@ -335,14 +340,14 @@ const Index = () => {
           loadedProjectIdRef.current = created.id;
           clearWorkspace();
           syncProjectParam(created.id);
-          toast.success("Project saved to cloud");
+          toast.success("Saved as a new project");
         } else {
-          toast.error("Could not create a cloud project.");
+          toast.error("Could not create the project. Your changes are still in the editor; try saving again.");
         }
       }
     } catch (err) {
       console.error("Cloud save error:", err);
-      toast.error("Error saving to cloud");
+      toast.error("Could not save. Check your connection and save again.");
     }
 
     if (succeeded) {
@@ -359,16 +364,18 @@ const Index = () => {
     setIsSaving(false);
     if (pendingSaveRef.current) {
       pendingSaveRef.current = false;
-      void performCloudSave();
+      void performCloudSave({ quiet: true });
     }
   }, [commitWorkspace, setCloudProject, syncProjectParam]);
 
   const scheduleCloudAutosave = useCallback(() => {
     if (!cloudProjectIdRef.current || !userRef.current) return;
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    const delay = settingsRef.current.autoSaveDelay;
+    if (delay <= 0) return; // Auto-save is off: Ctrl/Cmd+S saves.
     autoSaveTimer.current = setTimeout(() => {
-      void performCloudSave();
-    }, CLOUD_AUTOSAVE_MS);
+      void performCloudSave({ quiet: true });
+    }, delay);
   }, [performCloudSave]);
 
   /** Call after any change to files/folders so "unsaved" state and cloud auto-save stay correct. */
@@ -377,9 +384,16 @@ const Index = () => {
     scheduleCloudAutosave();
   }, [scheduleCloudAutosave]);
 
+  // Leaving the editor inside the app (dashboard link, "Go to dashboard") does not fire beforeunload,
+  // so save a cloud project's pending changes on the way out instead of dropping them.
+  const performCloudSaveRef = useRef(performCloudSave);
+  performCloudSaveRef.current = performCloudSave;
   useEffect(
     () => () => {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+      if (cloudProjectIdRef.current && hasUnsavedChangesRef.current) {
+        void performCloudSaveRef.current({ quiet: true });
+      }
     },
     []
   );
@@ -422,6 +436,7 @@ const Index = () => {
     // Don't create a storage entry for a pristine, never-used workspace.
     if (isWorkspaceEmpty(state) && !hasStoredWorkspace()) return;
     const ok = saveWorkspace(state, projectNameRef.current);
+    setScratchUnsafe(!ok);
     if (!ok && !storageWarnedRef.current) {
       storageWarnedRef.current = true;
       toast.warning("Couldn't keep a local copy of your work", {
@@ -519,16 +534,40 @@ const Index = () => {
   }, [searchParams, setSearchParams]);
 
   // UI state
-  const [isRunning, setIsRunning] = useState(false);
+  const runner = useRunController();
+  const { isRunning } = runner;
   // Lines pushed into the terminal after execution
   const [terminalExternalLines, setTerminalExternalLines] = useState<TerminalLine[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined);
   const [shareModalOpen, setShareModalOpen] = useState(false);
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteMode, setPaletteMode] = useState<PaletteMode>("commands");
+  // Problems the editor's language services report for the open file (type errors and the like).
+  const [editorProblems, setEditorProblems] = useState<{ errors: number; warnings: number } | null>(null);
+  const [panelRequest, setPanelRequest] = useState<{ tab: PanelTab; nonce: number }>();
+  const [revealPosition, setRevealPosition] = useState<{ line: number; column?: number; nonce: number } | null>(null);
+  const terminalPanelRef = useRef<ImperativePanelHandle>(null);
+  /** Runs and input prompts happen in the terminal, so never leave it collapsed when one starts. */
+  const revealTerminal = useCallback(() => {
+    const panel = terminalPanelRef.current;
+    if (panel?.isCollapsed()) panel.expand();
+    setPanelRequest({ tab: "terminal", nonce: Date.now() });
+  }, []);
+
+  const openSettings = useCallback((section?: SettingsSection) => {
+    setSettingsSection(section);
+    setSettingsOpen(true);
+  }, []);
+  const openPalette = useCallback((mode: PaletteMode) => {
+    setPaletteMode(mode);
+    setPaletteOpen(true);
+  }, []);
 
   // VS Code Layout State
   const [activeSidebarTab, setActiveSidebarTab] = useState<SidebarTab>("explorer");
-  const [sidebarOpen, setSidebarOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 768);
+  // Closed on phones, where a 240px panel would leave the editor about 100px wide.
+  const [sidebarOpen, setSidebarOpen] = useState(() => !isNarrowScreen());
   const [inlineCreateTrigger, setInlineCreateTrigger] = useState(0);
   const [newFileRequested, setNewFileRequested] = useState(false);
   const [cursorPosition, setCursorPosition] = useState({ line: 1, col: 1 });
@@ -766,6 +805,14 @@ const Index = () => {
   );
 
   const handleSelectFile = useCallback((id: string) => updateWorkspace((s) => openFile(s, id)), [updateWorkspace]);
+  /** Opening a file from the explorer on a phone hides the explorer so the file is visible. */
+  const handleSelectFileFromSidebar = useCallback(
+    (id: string) => {
+      handleSelectFile(id);
+      if (isNarrowScreen()) setSidebarOpen(false);
+    },
+    [handleSelectFile]
+  );
   const handleCloseTab = useCallback((id: string) => updateWorkspace((s) => closeTab(s, id)), [updateWorkspace]);
 
   const updateFileContent = useCallback(
@@ -949,84 +996,106 @@ const Index = () => {
     [markChanged, updateWorkspace]
   );
 
-  /** Runs the active file and streams the result into the terminal. */
+  /**
+   * Runs the active file and streams the result into the terminal. The file is read from the
+   * workspace ref at call time, so a run started right after switching files runs the new file.
+   */
   const executeActiveFile = useCallback(
     async (stdin?: string) => {
-      if (!activeFile) return;
-      const lang = getLanguageById(activeFile.languageId);
-
-      setIsRunning(true);
-      const initialLines: TerminalLine[] = [{ text: `▶ Running ${activeFile.name} (${lang.label})…`, type: "info" }];
-      if (stdin && stdin.trim()) {
-        initialLines.push({ text: `📥 Input: ${stdin.trim().replace(/\n/g, " ")}`, type: "stdin-prompt" });
+      const file = wsRef.current.files.find((f) => f.id === wsRef.current.activeFileId);
+      if (!file) return;
+      if (runner.isBusy()) {
+        toast.info("A run is already going", { description: "Stop it or wait for it to finish, then run again." });
+        return;
       }
-      setTerminalExternalLines(initialLines);
+      const lang = getLanguageById(file.languageId);
 
-      // Record snapshot on execution
-      recordSnapshot(activeFile.id, activeFile.name, activeFile.content, "Code Run");
-
-      try {
-        if (!lang.pistonLang) {
-          setTerminalExternalLines([
-            { text: `[WARN] ${lang.label} can't be run here. It is available for editing and syntax highlighting only.`, type: "info" },
-          ]);
-          return;
-        }
-        const stdinToPass = stdin && stdin.trim() ? stdin : undefined;
-        const result = await executeCode(lang.pistonLang, lang.pistonVersion, activeFile.content, stdinToPass);
-        const resultLines = toResultLines(result.output, result.success);
-
-        // If program failed due to EOF / missing input, prompt in terminal to re-run:
-        if (!stdinToPass && result.output.some((l) => l.includes("EOFError") || l.includes("EOF") || l.includes("NoSuchElementException"))) {
-          resultLines.push({
-            text: "💡 Program halted waiting for input. Type input below and press Enter to re-run:",
-            type: "stdin-prompt",
-          });
-          setStdinRequestTrigger(Date.now());
-        }
-        setTerminalExternalLines(resultLines);
-
-        if (result.success) {
-          addCreatedFiles(detectCreatedFiles(activeFile.content, activeFile.languageId, result.output));
-        }
-      } catch (err) {
-        console.error("Execution error:", err);
-        const message = err instanceof Error ? err.message : "";
+      if (!lang.pistonLang) {
         setTerminalExternalLines([
-          { text: `❌ Execution error: ${message || "Failed to contact execution server"}`, type: "error" },
-          { text: "Check your internet connection or try again.", type: "info" },
+          { text: `${lang.label} can't be run here. It is available for editing and syntax highlighting only.`, type: "warning" },
         ]);
-      } finally {
-        setIsRunning(false);
+        return;
+      }
+
+      const initialLines: TerminalLine[] = [runStartLine(file.name, lang.label)];
+      const stdinToPass = stdin && stdin.trim() ? stdin : undefined;
+      if (stdinToPass) {
+        initialLines.push({ text: `Input: ${stdinToPass.trim().replace(/\n/g, " ")}`, type: "info" });
+      }
+      revealTerminal();
+      setTerminalExternalLines(initialLines);
+      recordSnapshot(file.id, file.name, file.content, "Code Run");
+
+      const outcome = await runner.start(async (signal) => {
+        try {
+          return await executeCode(lang.pistonLang!, lang.pistonVersion, file.content, stdinToPass, {
+            signal,
+            fileName: file.name,
+          });
+        } catch (err) {
+          console.error("Execution error:", err);
+          return null;
+        }
+      });
+      if (outcome.status !== "done") return;
+      const result = outcome.value;
+      if (!result) {
+        setTerminalExternalLines([{ text: RUN_MESSAGES.network, type: "error" }]);
+        return;
+      }
+
+      const resultLines: TerminalLine[] = runResultToLines(result);
+      // The program stopped because it wanted input that was never given: ask for it in the terminal.
+      const wantedInput = /EOFError|EOF when reading|NoSuchElementException/.test(`${result.stderr}\n${result.stdout}`);
+      if (!stdinToPass && result.outcome === "runtime-error" && wantedInput) {
+        resultLines.push({ text: "The program is waiting for input. Type it below and press Enter to run again.", type: "stdin-prompt" });
+        setStdinRequestTrigger(Date.now());
+      }
+      setTerminalExternalLines(resultLines);
+
+      if (result.success) {
+        addCreatedFiles(detectCreatedFiles(file.content, file.languageId, result.stdout ? result.stdout.split("\n") : result.output));
       }
     },
-    [activeFile, addCreatedFiles]
+    [addCreatedFiles, runner, revealTerminal]
   );
+
+  /** Stops the current run. The runner reports it as cancelled and the terminal says so. */
+  const handleStop = runner.stop;
 
   const handleRun = useCallback(
     async (customStdin?: unknown) => {
-      if (!activeFile) {
+      const file = wsRef.current.files.find((f) => f.id === wsRef.current.activeFileId);
+      if (!file) {
         toast.info("Create or open a file to run it.");
         return;
       }
-      if (isRunning) return;
-
-      if (activeFile.languageId === "html" || activeFile.languageId === "css") {
-        setTerminalExternalLines([{ text: "[OK] Rendered in preview panel.", type: "success" }]);
+      if (runner.isBusy()) {
+        toast.info("A run is already going", { description: "Stop it or wait for it to finish, then run again." });
         return;
       }
 
-      // Safely check if customStdin is an actual string (prevents React MouseEvent crash!)
-      const stdinArg: string | undefined = typeof customStdin === "string" ? customStdin : undefined;
-      const lang = getLanguageById(activeFile.languageId);
-      const needsStdin = detectNeedsStdin(activeFile.content, activeFile.languageId);
+      if (file.languageId === "html" || file.languageId === "css") {
+        setTerminalExternalLines([{ text: "Rendered in the preview panel.", type: "success" }]);
+        return;
+      }
 
-      // If program expects input and none was provided yet, prompt directly in the terminal!
+      if (settingsRef.current.saveBeforeRun && cloudProjectIdRef.current && userRef.current) {
+        if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+        void performCloudSave({ quiet: true });
+      }
+
+      // Only a string is stdin; a click handler may pass a mouse event.
+      const stdinArg: string | undefined = typeof customStdin === "string" ? customStdin : undefined;
+      const lang = getLanguageById(file.languageId);
+      const needsStdin = detectNeedsStdin(file.content, file.languageId);
+
+      // The program reads input and none was given yet: collect it in the terminal first.
       if (needsStdin && stdinArg === undefined && !programStdin.trim()) {
+        revealTerminal();
         setTerminalExternalLines([
-          { text: `▶ Running ${activeFile.name} (${lang.label})…`, type: "info" },
-          { text: "⌨ Program waiting for input (scanf / input()).", type: "info" },
-          { text: "Type your input below and press Enter to execute (or Shift+Enter for multiline):", type: "stdin-prompt" },
+          runStartLine(file.name, lang.label),
+          { text: "This program reads input. Type it below and press Enter to run (Shift+Enter adds a line).", type: "stdin-prompt" },
         ]);
         setStdinRequestTrigger(Date.now());
         return;
@@ -1034,7 +1103,7 @@ const Index = () => {
 
       await executeActiveFile(stdinArg !== undefined ? stdinArg : programStdin);
     },
-    [activeFile, isRunning, programStdin, executeActiveFile]
+    [programStdin, executeActiveFile, performCloudSave, runner, revealTerminal]
   );
 
   const handleClearOutput = useCallback(() => {
@@ -1043,16 +1112,16 @@ const Index = () => {
 
   const handleTerminalCommand = useCallback(
     async (cmd: string) => {
-      if (!activeFile) {
-        setTerminalExternalLines([{ text: "❌ No file is open. Create or open a file first.", type: "error" }]);
+      const file = wsRef.current.files.find((f) => f.id === wsRef.current.activeFileId);
+      if (!file) {
+        setTerminalExternalLines([{ text: "No file is open. Create or open a file first.", type: "error" }]);
         return;
       }
 
       // Plain "run" — run the active file, output stays in Terminal tab
       if (cmd === "run") {
-        // HTML/CSS: just show a note
-        if (activeFile.languageId === "html" || activeFile.languageId === "css") {
-          setTerminalExternalLines([{ text: "[OK] Rendered in preview panel.", type: "success" }]);
+        if (file.languageId === "html" || file.languageId === "css") {
+          setTerminalExternalLines([{ text: "Rendered in the preview panel.", type: "success" }]);
           return;
         }
         await executeActiveFile();
@@ -1061,8 +1130,8 @@ const Index = () => {
 
       // "run-with-stdin:<b64stdin>" — execute active file with captured stdin
       if (cmd.startsWith("run-with-stdin:")) {
-        if (!getLanguageById(activeFile.languageId).pistonLang) {
-          setTerminalExternalLines([{ text: "❌ This language has no runtime here.", type: "error" }]);
+        if (!getLanguageById(file.languageId).pistonLang) {
+          setTerminalExternalLines([{ text: "This language can't be run here.", type: "error" }]);
           return;
         }
         const b64stdin = cmd.slice("run-with-stdin:".length);
@@ -1076,7 +1145,49 @@ const Index = () => {
         await executeActiveFile(stdin);
       }
     },
-    [activeFile, executeActiveFile]
+    [executeActiveFile]
+  );
+
+  /** A problem in the terminal was clicked: open its file (when it names one) and jump to the line. */
+  const handleRevealProblem = useCallback(
+    (problem: Problem) => {
+      if (!problem.line) return;
+      if (problem.file) {
+        const base = problem.file.split("/").pop();
+        const match = wsRef.current.files.find((f) => f.name === problem.file || f.name.split("/").pop() === base);
+        if (match && match.id !== wsRef.current.activeFileId) updateWorkspace((s) => openFile(s, match.id));
+      }
+      setRevealPosition({ line: problem.line, column: problem.column, nonce: Date.now() });
+    },
+    [updateWorkspace]
+  );
+
+  const handleRenameProject = useCallback(
+    async (rawName: string) => {
+      const name = rawName.trim().slice(0, 80);
+      if (!name || name === projectNameRef.current) return;
+      const previous = projectNameRef.current;
+      setProjectName(name);
+      projectNameRef.current = name;
+      const id = cloudProjectIdRef.current;
+      if (!id) {
+        toast.success("Project renamed");
+        return;
+      }
+      try {
+        const updated = await updateProject(id, { name });
+        if (!updated) throw new Error("update failed");
+        toast.success("Project renamed");
+      } catch (err) {
+        console.error("Rename project error:", err);
+        if (projectNameRef.current === name) {
+          setProjectName(previous);
+          projectNameRef.current = previous;
+        }
+        toast.error("Could not rename the project. Check your connection and try again.");
+      }
+    },
+    []
   );
 
   const handleActivityTabChange = (tab: SidebarTab) => {
@@ -1088,22 +1199,85 @@ const Index = () => {
     }
   };
 
-  // Stable wrappers handed to the editor so its keybindings never call stale handlers.
+  const toggleSidebar = useCallback(() => setSidebarOpen((open) => !open), []);
+  const toggleTerminal = useCallback(() => {
+    const panel = terminalPanelRef.current;
+    if (!panel) return;
+    if (panel.isCollapsed()) panel.expand();
+    else panel.collapse();
+  }, []);
+  const handleDownloadProject = useCallback(() => {
+    const all = wsRef.current.files;
+    if (all.length === 0) {
+      toast.info("Nothing to download yet", { description: "Create a file first." });
+      return;
+    }
+    const name = zipFileName(projectNameRef.current);
+    downloadZip(name, buildZip(all.map((f) => ({ path: f.name, content: f.content }))));
+    toast.success(`Downloaded ${name}`);
+  }, []);
+
+  const changeFontSize = useCallback((delta: number | null) => {
+    const current = settingsRef.current.fontSize;
+    updateEditorSettings({ fontSize: delta === null ? DEFAULT_EDITOR_SETTINGS.fontSize : current + delta });
+  }, []);
+
+  const paletteOpenRef = useRef(paletteOpen);
+  paletteOpenRef.current = paletteOpen;
+
+  // Stable wrappers handed to the editor and the key handlers so they never call stale handlers.
   const latest = useRef({ handleSave, handleDownload, handleRun, requestNewFile });
   latest.current = { handleSave, handleDownload, handleRun, requestNewFile };
   const editorRun = useCallback(() => void latest.current.handleRun(), []);
   const editorSave = useCallback(() => latest.current.handleSave(), []);
 
-  // Global keyboard shortcuts
+  // Shortcuts that must work everywhere, including inside the code editor (which would otherwise
+  // take Ctrl/Cmd+K as the start of a chord). Capture phase runs before Monaco sees the key.
+  useEffect(() => {
+    const onKeyCapture = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod || e.altKey || e.repeat) return;
+      const key = e.key.toLowerCase();
+      const inOverlay = isInsideOverlay(e.target);
+      let action: (() => void) | null = null;
+      if (key === "k" && !e.shiftKey) action = () => (paletteOpenRef.current ? setPaletteOpen(false) : openPalette("commands"));
+      else if (key === "p" && e.shiftKey) action = () => openPalette("commands");
+      else if (key === "p" && !e.shiftKey) action = () => openPalette("files");
+      // Inside another dialog these keys belong to it (Ctrl+K and Ctrl+P still toggle the palette itself).
+      if (action && inOverlay && !paletteOpenRef.current) return;
+      if (!action && !inOverlay) {
+        if (key === "," && !e.shiftKey) action = () => openSettings();
+        else if (key === "b" && !e.shiftKey) action = toggleSidebar;
+        else if (key === "j" && !e.shiftKey) action = toggleTerminal;
+      }
+      if (!action) return;
+      e.preventDefault();
+      e.stopPropagation();
+      action();
+    };
+    window.addEventListener("keydown", onKeyCapture, true);
+    return () => window.removeEventListener("keydown", onKeyCapture, true);
+  }, [openPalette, openSettings, toggleSidebar, toggleTerminal]);
+
+  // The rest of the global shortcuts. The editor handles its own Ctrl/Cmd+S and +Enter, so these
+  // run for focus elsewhere; they stay out of text fields and dialogs.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
       const ctrl = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
+      const inOverlay = isInsideOverlay(e.target);
+      // Save also works from text fields (it never edits them); dialogs keep their own keys.
       if (ctrl && !e.altKey && key === "s") {
-        e.preventDefault();
+        e.preventDefault(); // never open the browser's "Save page" dialog
+        if (inOverlay) return;
         if (e.shiftKey) latest.current.handleDownload();
         else latest.current.handleSave();
-      } else if (ctrl && key === "enter") {
+        return;
+      }
+      // Text fields (the terminal prompt, rename and search boxes) use Enter themselves.
+      if (inOverlay || isTypingOutsideEditor(e.target)) return;
+      if (ctrl && key === "enter") {
         e.preventDefault();
         void latest.current.handleRun();
       } else if (ctrl && !e.altKey && key === "n") {
@@ -1117,189 +1291,297 @@ const Index = () => {
         else latest.current.requestNewFile();
       } else if (ctrl && e.key === "/") {
         e.preventDefault();
-        setShortcutsOpen((prev) => !prev);
+        openSettings("shortcuts");
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [openSettings]);
 
+  // Ask before leaving only when leaving would lose work: a cloud project with changes that are
+  // not saved yet, a save still in flight, or a scratch workspace the browser refused to store.
+  const leaveWouldLoseWork =
+    settings.confirmBeforeLeave && (isSaving || (!!cloudProjectId && hasUnsavedChanges) || scratchUnsafe);
   useEffect(() => {
-    if (!shortcutsOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setShortcutsOpen(false);
+    if (!leaveWouldLoseWork) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      // Older browsers need a return value to show the prompt.
+      e.returnValue = "";
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [shortcutsOpen]);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [leaveWouldLoseWork]);
+
+  // A short-lived zoom readout when the font size changes (not shown on first load).
+  const [zoomNotice, setZoomNotice] = useState<number | null>(null);
+  const lastFontSize = useRef(settings.fontSize);
+  useEffect(() => {
+    if (lastFontSize.current === settings.fontSize) return;
+    lastFontSize.current = settings.fontSize;
+    setZoomNotice(settings.fontSize);
+    const t = setTimeout(() => setZoomNotice(null), 1200);
+    return () => clearTimeout(t);
+  }, [settings.fontSize]);
+
+  // No file open means no editor markers to count.
+  useEffect(() => {
+    if (!activeFile) setEditorProblems(null);
+  }, [activeFile]);
+
+  // The status bar counts what the Problems tab lists (problems in the latest run output, read
+  // with the same rule) plus the editor's own markers.
+  const problemCounts = useMemo(
+    () => combineProblemCounts(countProblems(problemsFromRunLines(terminalExternalLines)), editorProblems),
+    [terminalExternalLines, editorProblems]
+  );
+
+  const showProblems = useCallback(() => {
+    revealTerminal();
+    setPanelRequest({ tab: "problems", nonce: Date.now() });
+  }, [revealTerminal]);
+
+  const hasFile = !!activeFile;
+  const githubLinked = !!github.link;
+  const githubSignedIn = !!github.auth;
+  const paletteCommands = useMemo<PaletteCommand[]>(() => {
+    const needFile = hasFile ? undefined : "Open a file first";
+    const cmds: PaletteCommand[] = [
+      { id: "run", group: "Code", label: "Run", shortcut: shortcutFor("run"), keywords: ["execute", "start"], disabledReason: isRunning ? "Running" : needFile, run: () => void latest.current.handleRun() },
+      ...(isRunning ? [{ id: "stop", group: "Code", label: "Stop", keywords: ["cancel", "abort", "kill"], run: handleStop }] : []),
+      { id: "show-problems", group: "Code", label: "Show problems", keywords: ["errors", "warnings", "issues"], run: showProblems },
+      { id: "clear-terminal", group: "Code", label: "Clear terminal", keywords: ["output", "console"], run: handleClearOutput },
+      { id: "change-language", group: "Code", label: "Change language", keywords: ["mode", "syntax"], run: () => openPalette("languages") },
+      { id: "save", group: "Files", label: "Save", shortcut: shortcutFor("save"), run: () => latest.current.handleSave() },
+      { id: "new-file", group: "Files", label: "New file", shortcut: shortcutFor("new-file"), keywords: ["create"], run: () => latest.current.requestNewFile() },
+      { id: "new-project", group: "Files", label: "New project", shortcut: shortcutFor("new-project"), keywords: ["create"], run: () => setNewProjectOpen(true) },
+      { id: "goto-file", group: "Files", label: "Go to file", shortcut: shortcutFor("goto-file"), keywords: ["open", "find"], run: () => openPalette("files") },
+      { id: "download-file", group: "Files", label: "Download file", shortcut: shortcutFor("download"), disabledReason: needFile, run: () => latest.current.handleDownload() },
+      { id: "download-project", group: "Files", label: "Download project", keywords: ["zip", "export"], run: handleDownloadProject },
+      { id: "share", group: "Files", label: "Share", keywords: ["link", "publish"], disabledReason: needFile, run: handleShare },
+      { id: "toggle-sidebar", group: "View", label: "Toggle sidebar", shortcut: shortcutFor("toggle-sidebar"), keywords: ["explorer", "hide", "show"], run: toggleSidebar },
+      { id: "toggle-terminal", group: "View", label: "Toggle terminal", shortcut: shortcutFor("toggle-terminal"), keywords: ["panel", "output", "console"], run: toggleTerminal },
+      { id: "search", group: "View", label: "Search in files", keywords: ["find"], run: () => { setActiveSidebarTab("search"); setSidebarOpen(true); } },
+      { id: "timeline", group: "View", label: "Show file history", keywords: ["timeline", "versions", "restore"], run: () => { setActiveSidebarTab("timeline"); setSidebarOpen(true); } },
+      { id: "word-wrap", group: "View", label: settings.wordWrap ? "Turn off word wrap" : "Turn on word wrap", keywords: ["wrap", "lines"], run: () => updateEditorSettings({ wordWrap: !settingsRef.current.wordWrap }) },
+      { id: "minimap", group: "View", label: settings.minimap ? "Hide minimap" : "Show minimap", run: () => updateEditorSettings({ minimap: !settingsRef.current.minimap }) },
+      { id: "zoom-in", group: "View", label: "Make text bigger", keywords: ["zoom in", "font size"], run: () => changeFontSize(1) },
+      { id: "zoom-out", group: "View", label: "Make text smaller", keywords: ["zoom out", "font size"], run: () => changeFontSize(-1) },
+      { id: "zoom-reset", group: "View", label: "Reset text size", keywords: ["zoom", "font size"], run: () => changeFontSize(null) },
+      { id: "settings", group: "Settings", label: "Open settings", shortcut: shortcutFor("settings"), keywords: ["preferences", "options"], run: () => openSettings() },
+      { id: "shortcuts", group: "Settings", label: "Keyboard shortcuts", shortcut: shortcutFor("shortcuts"), keywords: ["keys", "hotkeys"], run: () => openSettings("shortcuts") },
+      { id: "github", group: "GitHub", label: githubLinked ? "GitHub repository" : "Connect GitHub", keywords: ["git", "repo", "push", "pull"], run: () => github.setDialogOpen(true) },
+      { id: "github-sync", group: "GitHub", label: "Sync now", keywords: ["git", "push", "pull"], disabledReason: githubLinked && githubSignedIn ? undefined : "Connect GitHub first", run: () => void github.syncNow() },
+      { id: "dashboard", group: "Go to", label: "Go to dashboard", keywords: ["projects", "home"], run: () => navigate("/dashboard") },
+    ];
+    const order = ["Files", "Code", "View", "GitHub", "Settings", "Go to"];
+    return cmds.sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
+  }, [
+    hasFile,
+    isRunning,
+    githubLinked,
+    githubSignedIn,
+    github,
+    settings.wordWrap,
+    settings.minimap,
+    handleStop,
+    handleClearOutput,
+    showProblems,
+    handleDownloadProject,
+    handleShare,
+    openPalette,
+    openSettings,
+    toggleSidebar,
+    toggleTerminal,
+    changeFontSize,
+    navigate,
+  ]);
+  const paletteFiles = useMemo(() => files.map((f) => ({ id: f.id, path: f.name })), [files]);
 
   const showHtmlPreview = activeFile?.languageId === "html" || activeFile?.languageId === "css";
+  const projectKey = cloudProjectId ?? "scratch";
+
+  const terminal = (
+    <ErrorBoundary name="terminal" resetKeys={[projectKey]}>
+      <TerminalPanel
+        onClear={handleClearOutput}
+        onCommand={handleTerminalCommand}
+        isRunning={isRunning}
+        fileContent={activeFile?.content ?? ""}
+        fileLang={activeFile?.languageId ?? ""}
+        hasActiveFile={!!activeFile}
+        externalLines={terminalExternalLines}
+        requestStdin={stdinRequestTrigger}
+        onStop={handleStop}
+        onRevealProblem={handleRevealProblem}
+        requestTab={panelRequest}
+      />
+    </ErrorBoundary>
+  );
 
   return (
-    <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-[#07090e]">
-      {/* ─── Liquid Glass Background Lighting Mesh (Real optical refraction behind panels) ─── */}
-      <div className="pointer-events-none absolute inset-0 overflow-hidden z-0">
-        <div className="absolute -top-32 -left-32 h-[550px] w-[550px] rounded-full bg-primary/10 blur-[150px] animate-liquid-1" />
-        <div className="absolute top-1/4 -right-32 h-[650px] w-[650px] rounded-full bg-sky-500/10 blur-[170px] animate-liquid-2" />
-        <div className="absolute -bottom-32 left-1/4 h-[550px] w-[550px] rounded-full bg-violet-600/10 blur-[160px] animate-liquid-1" />
-      </div>
-
+    <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-ink">
       <TopBar
         activeLanguage={activeLanguage}
         activeFileName={activeFile?.name || ""}
         hasActiveFile={!!activeFile}
         projectName={projectName}
-        onRun={() => void handleRun()}
+        onRun={editorRun}
+        onStop={handleStop}
         onSave={handleSave}
         onDownload={handleDownload}
         onShare={handleShare}
         onNewFile={requestNewFile}
         onNewProject={() => setNewProjectOpen(true)}
         onLanguageChange={handleLanguageChange}
+        onRenameProject={(name) => void handleRenameProject(name)}
         isRunning={isRunning}
         user={user}
         profile={profile}
         isSaving={isSaving}
         hasUnsavedChanges={hasUnsavedChanges}
         isCloudProject={!!cloudProjectId}
-        onToggleShortcuts={() => setShortcutsOpen((prev) => !prev)}
+        onToggleShortcuts={() => openSettings("shortcuts")}
       />
 
-      <div className="flex flex-1 overflow-hidden z-10">
-        {/* VS Code Left Activity Bar */}
+      <div className="flex flex-1 overflow-hidden">
         <ActivityBar
           activeTab={activeSidebarTab}
           sidebarOpen={sidebarOpen}
           onTabChange={handleActivityTabChange}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => openSettings()}
           onOpenGitHub={() => github.setDialogOpen(true)}
           user={user}
           profile={profile}
         />
 
-        {/* VS Code Sidebar (Explorer with Full Folder Tree / Search / Timeline) */}
         {sidebarOpen && (
-          <Sidebar
-            files={files}
-            activeFileId={activeFileId}
-            projectName={projectName}
-            isCloudProject={!!cloudProjectId}
-            hasUnsavedChanges={hasUnsavedChanges}
-            activeTab={activeSidebarTab}
-            folders={folders}
-            defaultLanguageId={defaultLanguageId}
-            onSelectFile={handleSelectFile}
-            onCreateFile={handleNewFile}
-            onDeleteFile={handleDeleteFile}
-            onRenameFile={handleRenameFile}
-            onCreateFolder={handleCreateFolder}
-            onDeleteFolder={handleDeleteFolder}
-            onRenameFolder={handleRenameFolder}
-            onOpenSettings={() => setSettingsOpen(true)}
-            onUploadFiles={handleUploadFiles}
-            onRestoreSnapshot={handleRestoreSnapshot}
-            inlineCreateTrigger={inlineCreateTrigger}
-          />
+          <ErrorBoundary name="sidebar" resetKeys={[projectKey]}>
+            <Sidebar
+              files={files}
+              activeFileId={activeFileId}
+              projectName={projectName}
+              isCloudProject={!!cloudProjectId}
+              hasUnsavedChanges={hasUnsavedChanges}
+              activeTab={activeSidebarTab}
+              folders={folders}
+              defaultLanguageId={defaultLanguageId}
+              onSelectFile={handleSelectFileFromSidebar}
+              onCreateFile={handleNewFile}
+              onDeleteFile={handleDeleteFile}
+              onRenameFile={handleRenameFile}
+              onCreateFolder={handleCreateFolder}
+              onDeleteFolder={handleDeleteFolder}
+              onRenameFolder={handleRenameFolder}
+              onOpenSettings={() => openSettings()}
+              onUploadFiles={handleUploadFiles}
+              onRestoreSnapshot={handleRestoreSnapshot}
+              inlineCreateTrigger={inlineCreateTrigger}
+            />
+          </ErrorBoundary>
         )}
 
-        <PanelGroup direction="vertical" className="flex-1">
+        <PanelGroup direction="vertical" className="min-w-0 flex-1">
           <Panel defaultSize={65} minSize={30}>
-            {!activeFile ? (
-              <EditorEmptyState
-                variant={files.length === 0 ? "no-files" : "no-open-file"}
-                onNewFile={requestNewFile}
-                onNewProject={() => setNewProjectOpen(true)}
-                onCreateWithLanguage={handleCreateWithLanguage}
-                onUploadFiles={handleUploadFiles}
-              />
-            ) : (
-              <div className="flex h-full flex-col">
-                <FileTabs
-                  files={tabFiles}
-                  activeFileId={activeFileId}
-                  onSelectFile={handleSelectFile}
-                  onCloseFile={handleCloseTab}
+            <ErrorBoundary name="editor" resetKeys={[projectKey, activeFileId]}>
+              {!activeFile ? (
+                <EditorEmptyState
+                  variant={files.length === 0 ? "no-files" : "no-open-file"}
+                  onNewFile={requestNewFile}
+                  onNewProject={() => setNewProjectOpen(true)}
+                  onCreateWithLanguage={handleCreateWithLanguage}
+                  onUploadFiles={handleUploadFiles}
                 />
-                <Breadcrumbs
-                  activeFilePath={activeFile.name}
-                  projectName={projectName || "zuup-project"}
-                  isRunning={isRunning}
-                  onNavigateFolder={() => {
-                    setActiveSidebarTab("explorer");
-                    setSidebarOpen(true);
-                  }}
-                />
-                <div className="flex-1 overflow-hidden">
-                  <CodeEditor
-                    language={activeLanguage.monacoId}
-                    value={activeFile.content}
-                    onChange={updateFileContent}
-                    onCursorChange={setCursorPosition}
-                    filePath={activeFile.id}
-                    onRun={editorRun}
-                    onSave={editorSave}
-                    liveFileIds={liveFileIds}
+              ) : (
+                <div className="flex h-full flex-col">
+                  <FileTabs
+                    files={tabFiles}
+                    activeFileId={activeFileId}
+                    onSelectFile={handleSelectFile}
+                    onCloseFile={handleCloseTab}
                   />
+                  <Breadcrumbs
+                    activeFilePath={activeFile.name}
+                    projectName={projectName || "zuup-project"}
+                    isRunning={isRunning}
+                    onNavigateFolder={() => {
+                      setActiveSidebarTab("explorer");
+                      setSidebarOpen(true);
+                    }}
+                  />
+                  <div className="flex-1 overflow-hidden">
+                    <CodeEditor
+                      language={activeLanguage.monacoId}
+                      value={activeFile.content}
+                      onChange={updateFileContent}
+                      onCursorChange={setCursorPosition}
+                      filePath={activeFile.id}
+                      onRun={editorRun}
+                      onSave={editorSave}
+                      liveFileIds={liveFileIds}
+                      onMarkersChange={setEditorProblems}
+                      revealPosition={revealPosition}
+                    />
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </ErrorBoundary>
           </Panel>
 
-          <PanelResizeHandle className="h-1.5 bg-white/[0.04] hover:bg-primary/30 transition-colors cursor-row-resize flex items-center justify-center border-y border-white/[0.05]">
-            <div className="h-0.5 w-8 rounded-full bg-muted-foreground/30" />
-          </PanelResizeHandle>
+          <PanelResizeHandle className="h-px bg-rule transition-colors duration-150 hover:bg-primary/40 data-[resize-handle-state=drag]:bg-primary/60 focus-visible:bg-primary/60 focus-visible:outline-none" />
 
-          <Panel defaultSize={35} minSize={15}>
-            {showHtmlPreview ? (
-              <PanelGroup direction="horizontal">
-                <Panel defaultSize={50} minSize={20}>
-                  <TerminalPanel
-                    onClear={handleClearOutput}
-                    onCommand={handleTerminalCommand}
-                    isRunning={isRunning}
-                    fileContent={activeFile?.content ?? ""}
-                    fileLang={activeFile?.languageId ?? ""}
-                    hasActiveFile={!!activeFile}
-                    externalLines={terminalExternalLines}
-                    requestStdin={stdinRequestTrigger}
-                  />
-                </Panel>
-                <PanelResizeHandle className="w-1.5 bg-border/50 hover:bg-primary/30 transition-colors cursor-col-resize flex items-center justify-center">
-                  <div className="w-0.5 h-8 rounded-full bg-muted-foreground/30" />
-                </PanelResizeHandle>
-                <Panel defaultSize={50} minSize={20}>
-                  <HtmlPreview code={activeFile?.content ?? ""} />
-                </Panel>
-              </PanelGroup>
-            ) : (
-              <TerminalPanel
-                onClear={handleClearOutput}
-                onCommand={handleTerminalCommand}
-                isRunning={isRunning}
-                fileContent={activeFile?.content ?? ""}
-                fileLang={activeFile?.languageId ?? ""}
-                hasActiveFile={!!activeFile}
-                externalLines={terminalExternalLines}
-                requestStdin={stdinRequestTrigger}
-              />
-            )}
+          <Panel ref={terminalPanelRef} defaultSize={35} minSize={15} collapsible collapsedSize={0}>
+            {/* One layout for both cases so the terminal never remounts (and never loses its output
+                or re-reads an old stdin request) when switching between an HTML file and another. */}
+            <PanelGroup direction="horizontal">
+              <Panel id="terminal" order={1} defaultSize={50} minSize={20}>
+                {terminal}
+              </Panel>
+              {showHtmlPreview && (
+                <>
+                  <PanelResizeHandle className="w-px bg-rule transition-colors duration-150 hover:bg-primary/40 data-[resize-handle-state=drag]:bg-primary/60 focus-visible:bg-primary/60 focus-visible:outline-none" />
+                  <Panel id="preview" order={2} defaultSize={50} minSize={20}>
+                    <ErrorBoundary name="preview" resetKeys={[projectKey, activeFileId]}>
+                      <HtmlPreview code={activeFile?.content ?? ""} />
+                    </ErrorBoundary>
+                  </Panel>
+                </>
+              )}
+            </PanelGroup>
           </Panel>
         </PanelGroup>
       </div>
 
-      {/* VS Code Bottom Status Bar */}
       <StatusBar
         cursorPosition={cursorPosition}
         tabSize={settings.tabSize}
+        insertSpaces={settings.insertSpaces}
         languageLabel={activeLanguage.label}
         isCloudProject={!!cloudProjectId}
         isSaving={isSaving}
         hasUnsavedChanges={hasUnsavedChanges}
-        onLanguageClick={() => setSettingsOpen(true)}
+        isRunning={isRunning}
+        problems={problemCounts}
+        onProblemsClick={showProblems}
+        onLanguageClick={() => openPalette("languages")}
         githubStatus={<SyncStatusIndicator sync={github} />}
       />
 
-      <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} initialSection={settingsSection} />
+
+      <CommandPalette
+        open={paletteOpen}
+        mode={paletteMode}
+        onOpenChange={setPaletteOpen}
+        onModeChange={setPaletteMode}
+        commands={paletteCommands}
+        files={paletteFiles}
+        activeFileId={activeFileId}
+        onOpenFile={handleSelectFile}
+        languages={PALETTE_LANGUAGES}
+        currentLanguageId={defaultLanguageId}
+        onPickLanguage={handleLanguageChange}
+      />
 
       <GitHubDialog sync={github} projectName={projectName} fileCount={files.length} />
       <ConflictDialog sync={github} />
@@ -1325,48 +1607,12 @@ const Index = () => {
         }))}
       />
 
-      {/* Keyboard Shortcuts Overlay */}
-      {shortcutsOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShortcutsOpen(false)} aria-hidden="true" />
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Keyboard shortcuts"
-            className="relative z-10 w-full max-w-sm rounded-xl glass-strong glow-primary shadow-2xl overflow-hidden"
-          >
-            <div className="flex items-center justify-between border-b border-border px-5 py-3">
-              <h3 className="text-sm font-semibold">Keyboard Shortcuts</h3>
-              <button
-                onClick={() => setShortcutsOpen(false)}
-                className="text-muted-foreground hover:text-foreground transition-colors text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary rounded"
-              >
-                ESC
-              </button>
-            </div>
-            <div className="p-4 space-y-2">
-              {SHORTCUTS.map((s) => (
-                <div key={s.keys} className="flex items-center justify-between gap-3 py-1.5">
-                  <span className="text-xs text-muted-foreground">{s.desc}</span>
-                  <kbd className="rounded bg-secondary/80 px-2 py-0.5 text-[11px] font-mono text-foreground border border-border/50">
-                    {s.keys}
-                  </kbd>
-                </div>
-              ))}
-            </div>
-            <div className="border-t border-border px-5 py-2.5">
-              <p className="text-[10px] text-muted-foreground/60 text-center">
-                Press Ctrl+/ to toggle this panel
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Zoom indicator */}
-      {settings.fontSize !== 14 && (
-        <div className="fixed bottom-8 right-4 z-40 rounded-lg bg-secondary/90 border border-border/50 px-3 py-1.5 text-[11px] text-muted-foreground backdrop-blur-sm">
-          Zoom: {Math.round((settings.fontSize / 14) * 100)}%
+      {zoomNotice !== null && (
+        <div
+          role="status"
+          className="pointer-events-none fixed bottom-9 right-4 z-40 rounded-md border border-rule bg-raised px-2.5 py-1 text-[12px] text-muted-foreground shadow-float"
+        >
+          Text size {zoomNotice}px
         </div>
       )}
     </div>

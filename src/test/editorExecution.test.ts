@@ -93,6 +93,9 @@ describe("Piston Code Execution with Stdin", () => {
     expect(capturedBody.stdin).toBe("42\n");
     expect(result.success).toBe(true);
     expect(result.output[0]).toContain("Input received: 42");
+    expect(result.outcome).toBe("success");
+    expect(result.exitCode).toBe(0);
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
   });
 });
 

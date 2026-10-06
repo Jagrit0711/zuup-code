@@ -1,7 +1,8 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { supabase, ZUUP_AUTH_GATEWAY_URL } from "@/lib/supabase";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from "react";
+import { toast } from "sonner";
+import { supabase } from "@/lib/supabase";
 import { ensureProfile, type Profile } from "@/lib/profile";
-import { safeRedirectPath } from "@/lib/safeRedirect";
+import { buildZuupLoginUrl, consumeAuthRedirect } from "@/lib/authRedirect";
 import type { User, Session } from "@supabase/supabase-js";
 
 interface AuthContextType {
@@ -9,6 +10,9 @@ interface AuthContextType {
   profile: Profile | null;
   session: Session | null;
   loading: boolean;
+  /** Message from a failed SSO sign-in (bad or incomplete tokens, gateway error). */
+  authError: string | null;
+  clearAuthError: () => void;
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
   signUp: (email: string, password: string, name: string) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
@@ -48,152 +52,167 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(DEV_BYPASS_AUTH ? DEV_PROFILE : null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(!DEV_BYPASS_AUTH);
+  const [authError, setAuthError] = useState<string | null>(null);
 
-  // Ensure a profiles row exists whenever we have a user
-  const syncProfile = async (authUser: User | null) => {
-    if (authUser) {
-      const p = await ensureProfile(authUser);
-      setProfile(p);
-    } else {
+  // Refs let stable callbacks see the latest values without re-creating them every render.
+  const userRef = useRef<User | null>(user);
+  const profileRequest = useRef(0);
+  const signingOut = useRef(false);
+  // Until the URL tokens are consumed, a null INITIAL_SESSION must not end `loading`, or
+  // ProtectedRoute would bounce to /login while the SSO session is still being set up.
+  const ready = useRef(false);
+
+  // Ensure a profiles row exists whenever we have a user. Only the newest request may set state,
+  // so a slow lookup for an old user cannot overwrite the current profile.
+  const syncProfile = useCallback(async (authUser: User | null) => {
+    const request = ++profileRequest.current;
+    if (!authUser) {
       setProfile(null);
+      return;
     }
-  };
+    try {
+      const p = await ensureProfile(authUser);
+      if (request === profileRequest.current) setProfile(p);
+    } catch (err) {
+      console.warn("Could not load profile:", err);
+    }
+  }, []);
+
+  const applySession = useCallback(
+    (next: Session | null) => {
+      const prevId = userRef.current?.id ?? null;
+      const nextUser = next?.user ?? null;
+      userRef.current = nextUser;
+      setSession(next);
+      setUser(nextUser);
+      // Token refreshes keep the same user; only look the profile up again when the user changes.
+      if ((nextUser?.id ?? null) !== prevId) void syncProfile(nextUser);
+    },
+    [syncProfile]
+  );
 
   useEffect(() => {
     if (DEV_BYPASS_AUTH) return;
+    let active = true;
 
-    const initAuth = async () => {
-      try {
-        // 1. Check for Zuup Auth tokens in search params or hash
-        const searchParams = new URLSearchParams(window.location.search);
-        const tokenParam = searchParams.get("token");
+    consumeAuthRedirect().then((result) => {
+      if (!active) return;
+      ready.current = true;
+      if (result.error) setAuthError(result.error.message);
+      applySession(result.session);
+      setLoading(false);
+    });
 
-        const hash = window.location.hash.startsWith("#") ? window.location.hash.substring(1) : "";
-        const hashParams = new URLSearchParams(hash);
-        const accessToken = hashParams.get("access_token") || tokenParam;
-        const refreshToken = hashParams.get("refresh_token") || accessToken;
-
-        if (accessToken) {
-          const { data, error } = await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken || accessToken,
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, next) => {
+      // Defer: calling other Supabase methods inside this callback can deadlock the auth lock.
+      setTimeout(() => {
+        if (!active || (!ready.current && event === "INITIAL_SESSION")) return;
+        const hadUser = userRef.current !== null;
+        if (event === "SIGNED_OUT" && hadUser && !signingOut.current) {
+          // The session ended without the user asking (refresh token expired or revoked).
+          toast.warning("Your session expired", {
+            id: "session-expired",
+            description: "Sign in again to keep saving your projects to your account.",
+            duration: 10000,
           });
-
-          if (!error && data?.session) {
-            setSession(data.session);
-            setUser(data.session.user);
-            await syncProfile(data.session.user);
-
-            // Clean up tokens from URL without reloading
-            const cleanUrl = new URL(window.location.href);
-            cleanUrl.searchParams.delete("token");
-            cleanUrl.searchParams.delete("code");
-            cleanUrl.hash = "";
-            window.history.replaceState(
-              {},
-              document.title,
-              cleanUrl.pathname + (cleanUrl.search || "")
-            );
-            setLoading(false);
-            return;
-          }
         }
-      } catch (err) {
-        console.warn("Error processing Zuup Auth callback:", err);
-      }
+        if (event === "SIGNED_OUT") signingOut.current = false;
+        applySession(next);
+        if (ready.current) setLoading(false);
+      }, 0);
+    });
 
-      // 2. Fetch existing session
-      supabase.auth.getSession().then(({ data: { session } }) => {
-        setSession(session);
-        setUser(session?.user ?? null);
-        syncProfile(session?.user ?? null).then(() => setLoading(false));
-      });
+    return () => {
+      active = false;
+      subscription.unsubscribe();
     };
+  }, [applySession]);
 
-    initAuth();
-
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
-        syncProfile(session?.user ?? null);
-        setLoading(false);
-      }
-    );
-
-    return () => subscription.unsubscribe();
+  // Connectivity notice: non-blocking, and only one at a time.
+  useEffect(() => {
+    const offline = () =>
+      toast.warning("You're offline", {
+        id: "connectivity",
+        description: "Saving to your account will resume when you reconnect.",
+        duration: Infinity,
+      });
+    const online = () => toast.success("Back online", { id: "connectivity", duration: 3000 });
+    window.addEventListener("offline", offline);
+    window.addEventListener("online", online);
+    return () => {
+      window.removeEventListener("offline", offline);
+      window.removeEventListener("online", online);
+    };
   }, []);
 
-  const signIn = async (email: string, password: string) => {
+  const signIn = useCallback(async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     return { error: error?.message ?? null };
-  };
+  }, []);
 
-  const signUp = async (email: string, password: string, name: string) => {
+  const signUp = useCallback(async (email: string, password: string, name: string) => {
     const { error } = await supabase.auth.signUp({
       email,
       password,
       options: { data: { full_name: name } },
     });
     return { error: error?.message ?? null };
-  };
+  }, []);
 
-  const signOut = async () => {
-    await supabase.auth.signOut();
-    setUser(null);
-    setSession(null);
-    setProfile(null);
-  };
+  const signOut = useCallback(async () => {
+    signingOut.current = true;
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.warn("Sign out failed:", err);
+    }
+    applySession(null);
+  }, [applySession]);
 
-  const signInWithGitHub = async () => {
+  const signInWithGitHub = useCallback(async () => {
     await supabase.auth.signInWithOAuth({
       provider: "github",
       options: { redirectTo: `${window.location.origin}/dashboard` },
     });
-  };
+  }, []);
 
-  const signInWithGoogle = async () => {
+  const signInWithGoogle = useCallback(async () => {
     await supabase.auth.signInWithOAuth({
       provider: "google",
       options: { redirectTo: `${window.location.origin}/dashboard` },
     });
-  };
+  }, []);
 
-  const signInWithZuup = (returnUrl?: string) => {
-    // Only same-origin paths: an absolute URL here would send the SSO tokens to another site.
-    const cleanPath = safeRedirectPath(returnUrl);
-    const destination = `${window.location.origin}/auth/callback?redirect_to=${encodeURIComponent(cleanPath)}`;
-    const targetUrl = new URL(`${ZUUP_AUTH_GATEWAY_URL}/login`);
-    targetUrl.searchParams.set("redirect_to", destination);
-    window.location.href = targetUrl.toString();
-  };
+  const signInWithZuup = useCallback((returnUrl?: string) => {
+    window.location.href = buildZuupLoginUrl(window.location.origin, returnUrl);
+  }, []);
 
-  const refreshProfile = async () => {
-    if (user) {
-      await syncProfile(user);
-    }
-  };
+  const refreshProfile = useCallback(async () => {
+    await syncProfile(userRef.current);
+  }, [syncProfile]);
 
-  return (
-    <AuthContext.Provider
-      value={{
-        user,
-        profile,
-        session,
-        loading,
-        signIn,
-        signUp,
-        signOut,
-        signInWithGitHub,
-        signInWithGoogle,
-        signInWithZuup,
-        refreshProfile,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
+  const clearAuthError = useCallback(() => setAuthError(null), []);
+
+  const value = useMemo<AuthContextType>(
+    () => ({
+      user,
+      profile,
+      session,
+      loading,
+      authError,
+      clearAuthError,
+      signIn,
+      signUp,
+      signOut,
+      signInWithGitHub,
+      signInWithGoogle,
+      signInWithZuup,
+      refreshProfile,
+    }),
+    [user, profile, session, loading, authError, clearAuthError, signIn, signUp, signOut, signInWithGitHub, signInWithGoogle, signInWithZuup, refreshProfile]
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

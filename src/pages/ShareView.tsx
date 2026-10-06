@@ -1,29 +1,18 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { getShare, type CodeShare } from "@/lib/shareStorage";
 import { decodeData } from "@/lib/sharing";
-import { executeCode } from "@/lib/pistonApi";
-import { getLanguageById } from "@/lib/languages";
+import { executeCode, type ExecutionResult } from "@/lib/pistonApi";
+import { detectNeedsStdin, getLanguageById } from "@/lib/languages";
+import { runResultToLines, summarizeRun } from "@/lib/run/format";
+import { ZUUP_THEME, ZUUP_THEME_DATA } from "@/lib/editor/theme";
 import Editor from "@monaco-editor/react";
-import {
-  Loader2,
-  FileCode,
-  FolderOpen,
-  Eye,
-  Clock,
-  Copy,
-  Check,
-  Code2,
-  Download,
-  Play,
-  Sparkles,
-  ExternalLink,
-  ChevronDown,
-  Terminal as TerminalIcon,
-  X,
-  Share2,
-} from "lucide-react";
+import { Copy, Download, Play, Square, X } from "lucide-react";
+import { toast } from "sonner";
 import { copyToClipboard, downloadFile } from "@/lib/fileSystem";
+import IconButton from "@/components/ide/panel/IconButton";
+import { fileGlyph } from "@/components/ide/panel/fileGlyph";
+import { cn } from "@/lib/utils";
 
 const LOGO = "https://www.zuup.dev/lovable-uploads/b44b8051-6117-4b37-999d-014c4c33dd13.png";
 
@@ -58,7 +47,6 @@ function getMonacoLang(lang: string): string {
   };
   return map[lang.toLowerCase()] || "plaintext";
 }
-
 const ShareView = () => {
   const { shareId } = useParams<{ shareId: string }>();
   const navigate = useNavigate();
@@ -67,12 +55,17 @@ const ShareView = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [activeFileIndex, setActiveFileIndex] = useState(0);
-  const [copied, setCopied] = useState(false);
 
   // Execution state
   const [isRunning, setIsRunning] = useState(false);
-  const [terminalOutput, setTerminalOutput] = useState<string[] | null>(null);
-  const [showTerminal, setShowTerminal] = useState(false);
+  const [result, setResult] = useState<ExecutionResult | null>(null);
+  const [runNote, setRunNote] = useState("");
+  const [showOutput, setShowOutput] = useState(false);
+  const [stdin, setStdin] = useState("");
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Stop an in-flight run when leaving the page.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   useEffect(() => {
     async function loadShareData() {
@@ -99,7 +92,7 @@ const ShareView = () => {
             const projectShare: CodeShare = {
               id: shareId,
               type: "project",
-              title: decoded.name || "Shared Project",
+              title: decoded.name || "Shared project",
               language: decoded.files[0]?.language || "python",
               files: decoded.files.map((f: { fileName?: string; name?: string; language?: string; code?: string; content?: string }) => ({
                 name: f.fileName || f.name,
@@ -118,7 +111,7 @@ const ShareView = () => {
             const fileShare: CodeShare = {
               id: shareId,
               type: "file",
-              title: decoded.fileName || "Shared File",
+              title: decoded.fileName || "Shared file",
               language: decoded.language || "python",
               files: [
                 {
@@ -150,9 +143,12 @@ const ShareView = () => {
   const handleCopy = async () => {
     if (!share) return;
     const file = share.files[activeFileIndex];
-    await copyToClipboard(file.content);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await copyToClipboard(file.content);
+      toast.success("Code copied");
+    } catch {
+      toast.error("Could not copy. Select the code and copy it instead.");
+    }
   };
 
   const handleDownload = () => {
@@ -180,64 +176,78 @@ const ShareView = () => {
     }
     navigate("/editor?fork=true");
   };
-
   const handleRun = async () => {
     if (!share) return;
+    if (isRunning) {
+      abortRef.current?.abort();
+      return;
+    }
     const file = share.files[activeFileIndex];
     const lang = getLanguageById(file.language);
+    setShowOutput(true);
 
     if (!lang.pistonLang) {
-      setTerminalOutput([`⚠️ No runner available for ${file.language}.`]);
-      setShowTerminal(true);
+      setResult(null);
+      setRunNote(
+        lang.id === "html" || lang.id === "css"
+          ? `${lang.label} runs in the browser preview. Open it in the editor to see the page.`
+          : `${lang.label} can't be run here.`
+      );
       return;
     }
 
+    const controller = new AbortController();
+    abortRef.current = controller;
     setIsRunning(true);
-    setShowTerminal(true);
-    setTerminalOutput([`▶ Executing ${file.name} with ${lang.label} runtime...`]);
-
+    setResult(null);
+    setRunNote(`Running ${file.name}`);
     try {
-      const result = await executeCode(lang.pistonLang, lang.pistonVersion, file.content);
-      const out = [
-        ...result.output,
-        result.success ? "✅ Execution finished successfully." : "❌ Execution finished with errors.",
-      ];
-      setTerminalOutput(out);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "";
-      setTerminalOutput([`❌ Execution error: ${message || "Failed to reach execution server"}`]);
+      const next = await executeCode(lang.pistonLang, lang.pistonVersion, file.content, stdin || undefined, {
+        signal: controller.signal,
+        fileName: file.name,
+      });
+      if (abortRef.current === controller) {
+        setResult(next);
+        setRunNote("");
+      }
     } finally {
-      setIsRunning(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setIsRunning(false);
+      }
     }
   };
 
+  // Clear output when switching files
+  useEffect(() => {
+    setResult(null);
+    setRunNote("");
+  }, [activeFileIndex]);
+
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#0d0f17] flex items-center justify-center">
-        <div className="flex flex-col items-center gap-3">
-          <Loader2 size={32} className="text-primary animate-spin" />
-          <p className="text-sm text-muted-foreground font-mono">Loading shared code...</p>
-        </div>
+      <div className="flex min-h-screen items-center justify-center bg-ink">
+        <p className="text-[13px] text-muted-foreground" role="status">
+          Loading shared code
+        </p>
       </div>
     );
   }
 
   if (error || !share) {
     return (
-      <div className="min-h-screen bg-[#0d0f17] text-foreground flex items-center justify-center">
-        <div className="text-center space-y-4 max-w-sm px-4">
-          <div className="mx-auto h-16 w-16 rounded-2xl bg-destructive/10 border border-destructive/20 flex items-center justify-center">
-            <FileCode size={28} className="text-destructive" />
-          </div>
-          <h1 className="text-xl font-bold">Share Not Found</h1>
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            This code link may have expired or does not exist. You can start a new project in Zuup Code.
+      <div className="flex min-h-screen items-center bg-ink px-4 text-foreground">
+        <div className="mx-auto w-full max-w-md">
+          <h1 className="font-display text-2xl font-bold tracking-[-0.02em]">This link has no code behind it</h1>
+          <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
+            The share may have been removed, or the link was copied only in part. Ask the person who sent it for a
+            new link, or start your own project.
           </p>
           <Link
             to="/editor"
-            className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-xs font-semibold text-primary-foreground hover:brightness-110 transition-all glow-primary-sm"
+            className="mt-6 inline-flex h-8 items-center rounded-md bg-primary px-3 text-[13px] font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
           >
-            Open Zuup Code IDE
+            Open Zuup Code
           </Link>
         </div>
       </div>
@@ -246,226 +256,230 @@ const ShareView = () => {
 
   const activeFile = share.files[activeFileIndex] || share.files[0];
   const isProject = share.files.length > 1;
+  const activeLang = getLanguageById(activeFile.language);
+  const needsInput = !!activeLang.pistonLang && detectNeedsStdin(activeFile.content, activeLang.id);
+  const lineCount = activeFile.content.split("\n").length;
+  const summary = result ? summarizeRun(result) : null;
+  const outputLines = result ? runResultToLines(result).slice(0, -1) : [];
+  // Drop the trailing blank line that separates output from the summary; the summary lives in the header here.
+  if (outputLines.length && outputLines[outputLines.length - 1].text === "") outputLines.pop();
+
+  const summaryClass =
+    summary?.type === "success" ? "text-success" : summary?.type === "warning" ? "text-warning" : "text-danger";
 
   return (
-    <div className="min-h-screen bg-[#0d0f17] text-foreground flex flex-col font-sans">
-      {/* ─── Top Promotional Banner ─── */}
-      <div className="bg-gradient-to-r from-primary/20 via-primary/10 to-primary/20 border-b border-primary/20 px-4 py-2 flex items-center justify-between text-xs">
-        <div className="flex items-center gap-2">
-          <Sparkles size={14} className="text-primary animate-pulse" />
-          <span className="text-muted-foreground">
-            Viewing shared code on <strong className="text-foreground">Zuup Code</strong> — The Instant Cloud IDE with 20+ Languages.
-          </span>
-        </div>
-        <Link
-          to="/login"
-          className="hidden md:inline-flex items-center gap-1 font-semibold text-primary hover:underline ml-2"
-        >
-          Sign In with Zuup <ExternalLink size={11} />
-        </Link>
-      </div>
-
-      {/* ─── Navigation Header ─── */}
-      <header className="h-13 border-b border-border/60 bg-[#0a0c13] px-4 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-3">
-          <Link to="/" className="flex items-center gap-2 group">
-            <img src={LOGO} alt="Zuup" className="h-6 w-6 rounded group-hover:scale-105 transition-transform" />
-            <div className="flex items-center gap-0.5">
-              <span className="text-sm font-bold text-foreground">Zuup</span>
-              <span className="text-sm font-light text-primary">Code</span>
-            </div>
+    <div className="flex h-screen flex-col bg-ink font-sans text-foreground">
+      {/* Header */}
+      <header className="flex h-11 shrink-0 items-center justify-between gap-3 border-b border-rule bg-panel px-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <Link
+            to="/"
+            className="flex shrink-0 items-center gap-2 rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+          >
+            <img src={LOGO} alt="" className="h-5 w-5 rounded" />
+            <span className="text-[13px] font-semibold">Zuup Code</span>
           </Link>
-
-          <span className="text-muted-foreground/30 text-xs">/</span>
-
-          <div className="flex items-center gap-2">
-            {isProject ? <FolderOpen size={14} className="text-primary" /> : <FileCode size={14} className="text-primary" />}
-            <span className="text-sm font-semibold truncate max-w-[240px]">{share.title}</span>
-            <span className="rounded-md bg-secondary/80 border border-border/50 px-2 py-0.5 text-[10px] font-mono text-primary uppercase">
-              {share.type}
-            </span>
-            <span className="rounded-md bg-primary/10 border border-primary/20 px-2 py-0.5 text-[10px] font-mono text-muted-foreground">
-              Read-Only
-            </span>
-          </div>
+          <span className="text-faint" aria-hidden>
+            /
+          </span>
+          <h1 className="min-w-0 truncate text-[13px] font-medium" title={share.title}>
+            {share.title}
+          </h1>
+          <span className="hidden shrink-0 text-[12px] text-faint sm:inline">Read only</span>
         </div>
 
-        {/* Action Buttons */}
-        <div className="flex items-center gap-2">
-          {/* Run button */}
+        <div className="flex shrink-0 items-center gap-1">
+          <IconButton label="Copy code" side="bottom" onClick={handleCopy} className="hidden sm:inline-flex">
+            <Copy size={14} />
+          </IconButton>
+          <IconButton label="Download file" side="bottom" onClick={handleDownload} className="hidden sm:inline-flex">
+            <Download size={14} />
+          </IconButton>
           <button
+            type="button"
+            onClick={handleFork}
+            className="ml-1 h-8 rounded-md border border-rule px-3 text-[13px] text-foreground transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+          >
+            Edit a copy
+          </button>
+          <button
+            type="button"
             onClick={handleRun}
-            disabled={isRunning}
-            className="flex items-center gap-1.5 rounded-lg bg-secondary/80 border border-border/60 px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-secondary hover:text-primary transition-all cursor-pointer"
-            title="Run code online without leaving"
+            className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-panel"
           >
             {isRunning ? (
-              <Loader2 size={12} className="animate-spin text-primary" />
+              <Square size={10} className="fill-current" aria-hidden />
             ) : (
-              <Play size={12} className="text-green-400 fill-green-400" />
+              <Play size={12} className="fill-current" aria-hidden />
             )}
-            <span>{isRunning ? "Running..." : "Run"}</span>
-          </button>
-
-          {/* Copy code */}
-          <button
-            onClick={handleCopy}
-            className="hidden sm:flex items-center gap-1.5 rounded-lg border border-border/60 bg-secondary/40 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-all"
-            title="Copy code to clipboard"
-          >
-            {copied ? <Check size={13} className="text-green-400" /> : <Copy size={13} />}
-            <span>{copied ? "Copied" : "Copy"}</span>
-          </button>
-
-          {/* Download file */}
-          <button
-            onClick={handleDownload}
-            className="hidden sm:flex items-center gap-1.5 rounded-lg border border-border/60 bg-secondary/40 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-all"
-            title="Download file"
-          >
-            <Download size={13} />
-            <span>Download</span>
-          </button>
-
-          {/* Fork / Open in IDE button (Primary CTA) */}
-          <button
-            onClick={handleFork}
-            className="flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-semibold text-primary-foreground hover:brightness-110 transition-all glow-primary-sm"
-            title="Fork this code and start editing in Zuup Code IDE"
-          >
-            <Code2 size={13} />
-            <span>Fork in IDE</span>
+            {isRunning ? "Stop" : "Run"}
           </button>
         </div>
       </header>
 
-      {/* ─── Main Workspace Area ─── */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Project Files Sidebar (if multi-file) */}
+      <div className="flex min-h-0 flex-1">
+        {/* File list for multi-file shares */}
         {isProject && (
-          <aside className="w-56 border-r border-border/60 bg-[#0a0c13] shrink-0 overflow-y-auto select-none">
-            <div className="px-3 py-2.5 border-b border-border/40">
-              <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-                Files ({share.files.length})
-              </span>
-            </div>
-            <div className="p-2 space-y-1">
-              {share.files.map((file, i) => (
-                <button
-                  key={`${file.name}-${i}`}
-                  onClick={() => setActiveFileIndex(i)}
-                  className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-xs font-mono transition-all text-left ${
-                    i === activeFileIndex
-                      ? "bg-primary/15 text-primary font-semibold ring-1 ring-primary/40 glow-primary-sm"
-                      : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
-                  }`}
-                >
-                  <FileCode size={13} className={i === activeFileIndex ? "text-primary" : "text-muted-foreground"} />
-                  <span className="truncate flex-1">{file.name}</span>
-                </button>
-              ))}
-            </div>
+          <aside className="hidden w-56 shrink-0 flex-col border-r border-rule bg-panel md:flex">
+            <h2 className="flex h-9 shrink-0 items-center px-3 text-[12px] font-semibold text-muted-foreground">
+              Files<span className="ml-1.5 font-normal tabular-nums text-faint">{share.files.length}</span>
+            </h2>
+            <nav className="flex-1 overflow-y-auto pb-2" aria-label="Files">
+              {share.files.map((file, i) => {
+                const Glyph = fileGlyph(file.name);
+                const active = i === activeFileIndex;
+                return (
+                  <button
+                    type="button"
+                    key={`${file.name}-${i}`}
+                    onClick={() => setActiveFileIndex(i)}
+                    aria-current={active ? "true" : undefined}
+                    className={cn(
+                      "flex h-[22px] w-full items-center gap-1.5 px-3 text-left text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary",
+                      active ? "bg-raised text-foreground" : "text-muted-foreground hover:bg-raised/70 hover:text-foreground"
+                    )}
+                  >
+                    <Glyph size={14} aria-hidden className={active ? "text-muted-foreground" : "text-faint"} />
+                    <span className="truncate">{file.name}</span>
+                  </button>
+                );
+              })}
+            </nav>
           </aside>
         )}
 
-        {/* Read-Only Monaco Editor */}
-        <main className="flex-1 flex flex-col overflow-hidden bg-[#0d0f17]">
-          {/* File Tab Info Bar */}
-          <div className="flex items-center justify-between h-9 px-4 border-b border-border/40 bg-[#0a0c13] shrink-0 text-xs text-muted-foreground">
-            <div className="flex items-center gap-2">
-              <FileCode size={13} className="text-primary" />
-              <span className="font-mono text-foreground font-medium">{activeFile.name}</span>
-              <span className="text-border">·</span>
-              <span className="capitalize">{activeFile.language}</span>
-              <span className="text-border">·</span>
-              <span>{(activeFile.content.length / 1024).toFixed(1)} KB</span>
-            </div>
-            <div className="flex items-center gap-2 text-[10px] uppercase font-mono tracking-wider text-muted-foreground/60">
-              🔒 Read-Only Showcase
-            </div>
+        <main className="flex min-w-0 flex-1 flex-col">
+          {/* File bar */}
+          <div className="flex h-8 shrink-0 items-center gap-4 border-b border-rule px-3 text-[12px]">
+            {isProject ? (
+              <select
+                value={activeFileIndex}
+                onChange={(e) => setActiveFileIndex(Number(e.target.value))}
+                aria-label="File"
+                className="h-6 rounded-md border border-rule bg-ink px-1.5 font-mono text-[12px] text-foreground md:hidden"
+              >
+                {share.files.map((f, i) => (
+                  <option key={i} value={i}>
+                    {f.name}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+            <span className={cn("truncate font-mono text-foreground", isProject && "hidden md:inline")}>
+              {activeFile.name}
+            </span>
+            <span className="text-muted-foreground">{activeLang.label}</span>
+            <span className="hidden text-faint sm:inline">
+              {lineCount} {lineCount === 1 ? "line" : "lines"}
+            </span>
           </div>
 
-          {/* Monaco Editor Component */}
-          <div className="flex-1 overflow-hidden">
+          <div className="min-h-0 flex-1">
             <Editor
               height="100%"
               language={getMonacoLang(activeFile.language)}
               value={activeFile.content}
-              theme="vs-dark"
-              loading={
-                <div className="flex h-full items-center justify-center bg-[#0d0f17]">
-                  <Loader2 size={24} className="text-primary animate-spin" />
-                </div>
-              }
+              theme={ZUUP_THEME}
+              beforeMount={(monaco) => monaco.editor.defineTheme(ZUUP_THEME, ZUUP_THEME_DATA)}
+              loading={<div className="h-full bg-ink" />}
               options={{
                 readOnly: true,
                 domReadOnly: true,
-                fontSize: 14,
-                fontFamily: "'JetBrains Mono', monospace",
-                minimap: { enabled: true },
+                fontSize: 13.5,
+                lineHeight: 21,
+                fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                fontLigatures: false,
+                minimap: { enabled: false },
                 smoothScrolling: true,
-                padding: { top: 16, bottom: 16 },
+                padding: { top: 12, bottom: 12 },
                 scrollBeyondLastLine: false,
-                bracketPairColorization: { enabled: true },
                 wordWrap: "on",
                 lineNumbers: "on",
-                renderLineHighlight: "all",
+                renderLineHighlight: "none",
+                overviewRulerLanes: 0,
+                hideCursorInOverviewRuler: true,
+                scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
               }}
             />
           </div>
 
-          {/* Collapsible Execution Terminal */}
-          {showTerminal && (
-            <div className="border-t border-border/60 bg-[#090b12] flex flex-col max-h-60 shrink-0">
-              <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/40 bg-secondary/20">
-                <div className="flex items-center gap-2 text-xs font-mono font-medium text-foreground">
-                  <TerminalIcon size={12} className="text-primary" />
-                  <span>Terminal Output</span>
+          {/* Program input, for code that reads from the keyboard */}
+          {needsInput && (
+            <div className="shrink-0 border-t border-rule px-3 py-2">
+              <label htmlFor="share-stdin" className="text-[12px] font-semibold text-muted-foreground">
+                Program input
+              </label>
+              <p className="text-[12px] text-faint">This program reads input. Put one value per line, then run.</p>
+              <textarea
+                id="share-stdin"
+                value={stdin}
+                onChange={(e) => setStdin(e.target.value)}
+                rows={2}
+                spellCheck={false}
+                className="mt-1.5 w-full resize-y rounded-md border border-rule bg-ink px-2.5 py-1.5 font-mono text-[12.5px] text-foreground placeholder:text-faint focus-visible:border-primary/60 focus-visible:outline-none"
+                placeholder={"5\n10"}
+              />
+            </div>
+          )}
+
+          {/* Output */}
+          {showOutput && (
+            <section aria-label="Output" className="flex max-h-[40%] min-h-[120px] shrink-0 flex-col border-t border-rule">
+              <div className="flex h-8 shrink-0 items-center justify-between gap-3 pl-3 pr-1.5">
+                <div className="flex min-w-0 items-center gap-3 text-[12px]">
+                  <h2 className="font-semibold text-muted-foreground">Output</h2>
+                  <span role="status" className="truncate">
+                    {isRunning ? (
+                      <span className="flex items-center gap-1.5 text-muted-foreground">
+                        <span className="h-1.5 w-1.5 rounded-full bg-success motion-safe:animate-pulse" />
+                        Running
+                      </span>
+                    ) : summary ? (
+                      <span className={summaryClass}>{summary.text}</span>
+                    ) : null}
+                  </span>
                 </div>
-                <button
-                  onClick={() => setShowTerminal(false)}
-                  className="rounded p-1 text-muted-foreground hover:text-foreground"
+                <IconButton
+                  label="Close output"
+                  onClick={() => {
+                    abortRef.current?.abort();
+                    setShowOutput(false);
+                  }}
                 >
-                  <X size={12} />
-                </button>
+                  <X size={14} />
+                </IconButton>
               </div>
-              <div className="p-3 font-mono text-xs overflow-y-auto space-y-1 max-h-48 text-muted-foreground">
-                {terminalOutput?.map((line, i) => (
+              <div className="flex-1 overflow-y-auto px-3 pb-3 font-mono text-[12.5px] leading-[1.6]">
+                {runNote && <p className="font-sans text-[13px] text-muted-foreground">{runNote}</p>}
+                {outputLines.map((line, i) => (
                   <div
                     key={i}
-                    className={
-                      line.startsWith("❌")
-                        ? "text-destructive font-medium"
-                        : line.startsWith("✅")
-                        ? "text-green-400 font-medium"
-                        : line.startsWith("▶")
-                        ? "text-primary"
-                        : "text-foreground/90"
-                    }
+                    className={cn(
+                      "whitespace-pre-wrap break-words",
+                      line.type === "error"
+                        ? "text-danger"
+                        : line.type === "info"
+                          ? "font-sans text-[13px] text-muted-foreground"
+                          : "text-foreground/85"
+                    )}
                   >
-                    {line}
+                    {line.text || " "}
                   </div>
                 ))}
               </div>
-            </div>
+            </section>
           )}
         </main>
       </div>
 
-      {/* ─── Bottom Promotion Footer ─── */}
-      <footer className="border-t border-border/60 bg-[#080a10] px-4 py-2.5 flex flex-col sm:flex-row items-center justify-between gap-2 shrink-0 text-xs">
-        <div className="flex items-center gap-2 text-muted-foreground">
-          <Share2 size={13} className="text-primary" />
-          <span>Want to build and run your own projects with cloud saving & collaboration?</span>
-        </div>
-        <div className="flex items-center gap-3">
-          <Link
-            to="/editor"
-            className="text-primary font-semibold hover:underline flex items-center gap-1"
-          >
-            Launch Zuup Code IDE →
-          </Link>
-        </div>
+      <footer className="flex h-9 shrink-0 items-center justify-between gap-3 border-t border-rule bg-panel px-3 text-[12px] text-muted-foreground">
+        <span className="truncate">Shared from Zuup Code, a free code editor for students.</span>
+        <Link
+          to="/editor"
+          className="shrink-0 rounded text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+        >
+          Start your own project
+        </Link>
       </footer>
     </div>
   );

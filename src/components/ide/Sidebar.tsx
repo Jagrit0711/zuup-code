@@ -1,32 +1,29 @@
 import {
   ChevronRight,
-  ChevronDown,
-  FileCode,
   Folder,
   FolderOpen,
   FolderPlus,
-  Plus,
-  Settings,
-  Upload,
-  Cloud,
-  CloudOff,
-  History,
-  Trash2,
-  Edit2,
-  X,
-  Search,
-  RotateCcw,
-  Sparkles,
-  FolderMinus,
   FilePlus,
+  ListCollapse,
+  Pencil,
+  Plus,
+  Search,
+  Trash2,
+  Upload,
+  X,
 } from "lucide-react";
+import type { ReactNode } from "react";
 import { detectLanguageFromFilename, getLanguageById } from "@/lib/languages";
 import { FileTab, readTextFiles } from "@/lib/fileSystem";
 import { ancestorFolders, ensureExtension, type ActionResult } from "@/lib/fileNames";
 import { getFileTimeline, formatRelativeTime, type TimelineEntry } from "@/lib/timelineStorage";
-import { buildFolderTree, getFileIconInfo, TreeNode } from "@/lib/folderTree";
+import { buildFolderTree, TreeNode } from "@/lib/folderTree";
+import IconButton from "@/components/ide/panel/IconButton";
+import { fileGlyph } from "@/components/ide/panel/fileGlyph";
+import { cn } from "@/lib/utils";
 import { useRef, useState, useEffect, useMemo } from "react";
 import { toast } from "sonner";
+import { shortcutFor } from "@/components/ide/palette/shortcuts";
 
 export type SidebarTab = "explorer" | "search" | "timeline";
 
@@ -175,7 +172,7 @@ const Sidebar = ({
   const createHint = (() => {
     if (!creating || creating.kind !== "file" || createValue.trim() === "") return "";
     const name = ensureExtension(createValue.trim(), getLanguageById(defaultLanguageId).extension);
-    return `${name} · ${detectLanguageFromFilename(name).label}`;
+    return `${name} (${detectLanguageFromFilename(name).label})`;
   })();
 
   // Toggle folder expansion
@@ -287,23 +284,28 @@ const Sidebar = ({
         })
         .filter((r) => r.matches.length > 0)
     : [];
+  const INDENT = 12;
+  const rowPad = (depth: number) => `${depth * INDENT + 8}px`;
+
+  const rowBase =
+    "group relative flex h-[22px] w-full cursor-pointer items-center gap-1.5 pr-1.5 text-[13px] outline-none transition-colors duration-100 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary";
+
+  const inputClass = (invalid: boolean) =>
+    cn(
+      "h-[22px] w-full rounded-md border bg-ink px-1.5 font-mono text-[12px] text-foreground outline-none placeholder:text-faint",
+      invalid ? "border-danger" : "border-primary/60"
+    );
 
   // Inline "new file / new folder" row, shown inside the folder it targets
-  const renderCreateRow = (parent: string, paddingLeft: string) => {
+  const renderCreateRow = (parent: string, depth: number) => {
     if (!creating || creating.parent !== parent) return null;
     const isFile = creating.kind === "file";
+    const Glyph = isFile ? fileGlyph(createValue || "x.txt") : Folder;
     return (
-      <div style={{ paddingLeft }} className="py-1 pr-2">
-        <div
-          className={`flex items-center gap-1.5 rounded bg-secondary/90 px-2 py-1 ring-1 ${
-            createError ? "ring-destructive" : isFile ? "ring-primary" : "ring-amber-400"
-          }`}
-        >
-          {isFile ? (
-            <FileCode size={12} className="text-primary shrink-0" />
-          ) : (
-            <Folder size={12} className="text-amber-400 shrink-0" />
-          )}
+      <div style={{ paddingLeft: rowPad(depth) }} className="py-0.5 pr-1.5">
+        <div className="flex items-center gap-1.5">
+          <span className="w-3 shrink-0" aria-hidden />
+          <Glyph size={14} className="shrink-0 text-faint" aria-hidden />
           <input
             ref={createInputRef}
             type="text"
@@ -325,20 +327,20 @@ const Sidebar = ({
             onBlur={() => {
               if (createValue === "") setCreating(null);
             }}
-            placeholder={isFile ? "filename.ext" : "folder-name"}
+            placeholder={isFile ? "File name, e.g. main.py" : "Folder name"}
             aria-label={isFile ? "New file name" : "New folder name"}
             aria-invalid={createError ? true : undefined}
             spellCheck={false}
             autoComplete="off"
-            className="w-full bg-transparent text-[11px] font-mono outline-none text-foreground placeholder:text-muted-foreground/50"
+            className={inputClass(!!createError)}
           />
         </div>
         {createError ? (
-          <p role="alert" className="mt-1 px-1 text-[10px] leading-snug text-destructive">
+          <p role="alert" className="mt-1 pl-[34px] text-[12px] leading-snug text-danger">
             {createError}
           </p>
         ) : createHint ? (
-          <p className="mt-1 truncate px-1 text-[10px] text-muted-foreground/70" title={createHint}>
+          <p className="mt-1 truncate pl-[34px] text-[12px] text-faint" title={createHint}>
             {createHint}
           </p>
         ) : null}
@@ -347,7 +349,7 @@ const Sidebar = ({
   };
 
   const renderRenameInput = () => (
-    <div className="flex-1 min-w-0">
+    <div className="min-w-0 flex-1">
       <input
         type="text"
         value={renameValue}
@@ -375,39 +377,57 @@ const Sidebar = ({
           }
           finishRename(true);
         }}
-        onFocus={(e) => e.currentTarget.select()}
+        onFocus={(e) => {
+          // Select the name without its extension, like most editors.
+          const v = e.currentTarget.value;
+          const dot = v.lastIndexOf(".");
+          e.currentTarget.setSelectionRange(0, dot > 0 ? dot : v.length);
+        }}
         autoFocus
         aria-label="New name"
         aria-invalid={renameError ? true : undefined}
         spellCheck={false}
-        className={`w-full bg-secondary rounded px-1 text-[11px] text-foreground outline-none ring-1 ${renameError ? "ring-destructive" : "ring-primary"}`}
+        className={inputClass(!!renameError)}
       />
       {renameError && (
-        <p role="alert" className="mt-0.5 text-[10px] leading-snug text-destructive whitespace-normal">
+        <p role="alert" className="mt-1 whitespace-normal text-[12px] leading-snug text-danger">
           {renameError}
         </p>
       )}
     </div>
   );
 
-  // Recursive Tree Node Renderer
-  const renderTreeNode = (node: TreeNode, depth: number = 0) => {
-    const indentPadding = `${depth * 14 + 10}px`;
+  // Hover / focus revealed actions for a row (always visible on touch screens)
+  const rowActions = (children: ReactNode) => (
+    <div className="ml-auto flex shrink-0 items-center opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+      {children}
+    </div>
+  );
 
+  // Recursive tree node renderer
+  const renderTreeNode = (node: TreeNode, depth: number = 0) => {
     if (node.isFolder) {
       const isExpanded = expandedFolders.has(node.path);
       const isRenaming = renaming?.kind === "folder" && renaming.path === node.path;
+      const FolderGlyph = isExpanded ? FolderOpen : Folder;
 
       return (
-        <div key={node.id} className="select-none" role="none">
+        <div key={node.id} role="none">
           <div
             role="treeitem"
             aria-expanded={isExpanded}
+            aria-level={depth + 1}
             tabIndex={0}
             onClick={() => !isRenaming && toggleFolder(node.path)}
             onKeyDown={(e) => {
               if (e.target !== e.currentTarget) return;
               if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                toggleFolder(node.path);
+              } else if (e.key === "ArrowRight" && !isExpanded) {
+                e.preventDefault();
+                toggleFolder(node.path);
+              } else if (e.key === "ArrowLeft" && isExpanded) {
                 e.preventDefault();
                 toggleFolder(node.path);
               } else if (e.key === "F2" && onRenameFolder) {
@@ -418,24 +438,24 @@ const Sidebar = ({
                 onDeleteFolder(node.path);
               }
             }}
-            style={{ paddingLeft: indentPadding }}
-            className="group flex w-full items-center gap-1.5 py-1 pr-2 text-[11px] font-mono hover:bg-white/[0.05] transition-colors cursor-pointer rounded text-foreground/80 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+            style={{ paddingLeft: rowPad(depth) }}
+            className={cn(rowBase, "text-foreground/85 hover:bg-raised hover:text-foreground")}
           >
-            <span className="text-muted-foreground/60 transition-transform duration-150">
-              {isExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-            </span>
-
-            {isExpanded ? (
-              <FolderOpen size={13} className="text-amber-400 shrink-0" />
-            ) : (
-              <Folder size={13} className="text-amber-400/80 shrink-0" />
-            )}
+            <ChevronRight
+              size={12}
+              aria-hidden
+              className={cn(
+                "shrink-0 text-faint transition-transform duration-150 motion-reduce:transition-none",
+                isExpanded && "rotate-90"
+              )}
+            />
+            <FolderGlyph size={14} aria-hidden className="shrink-0 text-faint" />
 
             {isRenaming ? (
               renderRenameInput()
             ) : (
               <span
-                className="truncate flex-1 font-medium"
+                className="min-w-0 flex-1 truncate"
                 onDoubleClick={(e) => {
                   e.stopPropagation();
                   if (onRenameFolder) startRename("folder", node.id, node.path, node.name);
@@ -446,65 +466,69 @@ const Sidebar = ({
               </span>
             )}
 
-            {/* Folder Actions on Hover / keyboard focus / touch */}
-            {!isRenaming && (
-              <div className="hidden group-hover:flex group-focus-within:flex [@media(hover:none)]:flex items-center gap-1 shrink-0 ml-auto">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    startCreate("file", node.path);
-                  }}
-                  className="rounded p-0.5 text-muted-foreground/60 hover:text-primary hover:bg-white/[0.08] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-                  title="New File in this folder"
-                  aria-label={`New file in ${node.name}`}
-                >
-                  <Plus size={11} />
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    startCreate("folder", node.path);
-                  }}
-                  className="rounded p-0.5 text-muted-foreground/60 hover:text-primary hover:bg-white/[0.08] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-                  title="New Subfolder"
-                  aria-label={`New subfolder in ${node.name}`}
-                >
-                  <FolderPlus size={11} />
-                </button>
-                {onRenameFolder && (
-                  <button
+            {!isRenaming &&
+              rowActions(
+                <>
+                  <IconButton
+                    size="sm"
+                    label={`New file in ${node.name}`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      startRename("folder", node.id, node.path, node.name);
+                      startCreate("file", node.path);
                     }}
-                    className="rounded p-0.5 text-muted-foreground/60 hover:text-foreground hover:bg-white/[0.08] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-                    title="Rename folder (F2)"
-                    aria-label={`Rename folder ${node.name}`}
                   >
-                    <Edit2 size={10} />
-                  </button>
-                )}
-                {onDeleteFolder && (
-                  <button
+                    <Plus size={12} />
+                  </IconButton>
+                  <IconButton
+                    size="sm"
+                    label={`New folder in ${node.name}`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      onDeleteFolder(node.path);
+                      startCreate("folder", node.path);
                     }}
-                    className="rounded p-0.5 text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-                    title="Delete folder"
-                    aria-label={`Delete folder ${node.name}`}
                   >
-                    <Trash2 size={10} />
-                  </button>
-                )}
-              </div>
-            )}
+                    <FolderPlus size={12} />
+                  </IconButton>
+                  {onRenameFolder && (
+                    <IconButton
+                      size="sm"
+                      label="Rename"
+                      shortcut="F2"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        startRename("folder", node.id, node.path, node.name);
+                      }}
+                    >
+                      <Pencil size={11} />
+                    </IconButton>
+                  )}
+                  {onDeleteFolder && (
+                    <IconButton
+                      size="sm"
+                      tone="danger"
+                      label="Delete folder"
+                      shortcut="Del"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteFolder(node.path);
+                      }}
+                    >
+                      <Trash2 size={11} />
+                    </IconButton>
+                  )}
+                </>
+              )}
           </div>
 
-          {/* Children items if expanded */}
           {isExpanded && (
-            <div className="tree-indent-guide" role="group">
-              {renderCreateRow(node.path, `${(depth + 1) * 14 + 10}px`)}
+            <div role="group" className="relative">
+              {/* Indent guide, aligned with this folder's chevron */}
+              <span
+                aria-hidden
+                className="pointer-events-none absolute bottom-0 top-0 w-px bg-rule"
+                style={{ left: `${depth * INDENT + 13}px` }}
+              />
+              {renderCreateRow(node.path, depth + 1)}
               {node.children && node.children.map((child) => renderTreeNode(child, depth + 1))}
             </div>
           )}
@@ -512,17 +536,18 @@ const Sidebar = ({
       );
     }
 
-    // Render File Node
+    // File node
     const file = node.file!;
     const isActive = file.id === activeFileId;
     const isRenaming = renaming?.kind === "file" && renaming.id === file.id;
-    const iconInfo = getFileIconInfo(node.name);
+    const Glyph = fileGlyph(node.name);
 
     return (
       <div
         key={node.id}
         role="treeitem"
         aria-selected={isActive}
+        aria-level={depth + 1}
         tabIndex={0}
         onClick={() => !isRenaming && onSelectFile(file.id)}
         onKeyDown={(e) => {
@@ -538,69 +563,73 @@ const Sidebar = ({
             onDeleteFile(file.id);
           }
         }}
-        style={{ paddingLeft: indentPadding }}
-        className={`group flex w-full items-center gap-1.5 py-1 pr-2 text-[11px] font-mono transition-all cursor-pointer rounded select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary ${
+        style={{ paddingLeft: rowPad(depth) }}
+        className={cn(
+          rowBase,
           isActive
-            ? "bg-primary/20 text-foreground font-medium shadow-[inset_0_1px_0_0_rgba(255,255,255,0.12)] border border-primary/30"
-            : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground"
-        }`}
+            ? "bg-raised text-foreground"
+            : "text-muted-foreground hover:bg-raised/70 hover:text-foreground"
+        )}
       >
-        {/* Dynamic Extension Badge / Icon */}
-        <span className={`text-[10px] font-bold shrink-0 w-3.5 text-center ${iconInfo.badgeColor}`}>
-          {iconInfo.symbol}
-        </span>
+        {/* Chevron column, kept empty so file names line up with folder names */}
+        <span className="w-3 shrink-0" aria-hidden />
+        <Glyph size={14} aria-hidden className={cn("shrink-0", isActive ? "text-muted-foreground" : "text-faint")} />
 
         {isRenaming ? (
           renderRenameInput()
         ) : (
           <span
-            className="truncate flex-1"
+            className="min-w-0 flex-1 truncate"
             onDoubleClick={(e) => {
               e.stopPropagation();
               if (onRenameFile) startRename("file", file.id, file.name, node.name);
             }}
-            title={`${file.name} (Double-click or F2 to rename)`}
+            title={file.name}
           >
             {node.name}
           </span>
         )}
 
-        {/* Dirty indicator */}
         {file.isDirty && !isRenaming && (
-          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" title="Unsaved changes" />
+          <span
+            className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning group-hover:hidden group-focus-within:hidden"
+            title="Unsaved changes"
+            aria-label="Unsaved changes"
+          />
         )}
 
-        {/* Hover action buttons */}
-        {!isRenaming && (
-          <div className="hidden group-hover:flex group-focus-within:flex [@media(hover:none)]:flex items-center gap-1 shrink-0 ml-auto">
-            {onRenameFile && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  startRename("file", file.id, file.name, node.name);
-                }}
-                className="rounded p-0.5 text-muted-foreground/60 hover:text-foreground hover:bg-white/[0.08] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-                title="Rename file (F2)"
-                aria-label={`Rename ${node.name}`}
-              >
-                <Edit2 size={10} />
-              </button>
-            )}
-            {onDeleteFile && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDeleteFile(file.id);
-                }}
-                className="rounded p-0.5 text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-                title="Delete file (Del)"
-                aria-label={`Delete ${node.name}`}
-              >
-                <Trash2 size={10} />
-              </button>
-            )}
-          </div>
-        )}
+        {!isRenaming &&
+          rowActions(
+            <>
+              {onRenameFile && (
+                <IconButton
+                  size="sm"
+                  label="Rename"
+                  shortcut="F2"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startRename("file", file.id, file.name, node.name);
+                  }}
+                >
+                  <Pencil size={11} />
+                </IconButton>
+              )}
+              {onDeleteFile && (
+                <IconButton
+                  size="sm"
+                  tone="danger"
+                  label="Delete file"
+                  shortcut="Del"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeleteFile(file.id);
+                  }}
+                >
+                  <Trash2 size={11} />
+                </IconButton>
+              )}
+            </>
+          )}
       </div>
     );
   };
@@ -608,195 +637,163 @@ const Sidebar = ({
   const isWorkspaceEmpty = files.length === 0 && folders.length === 0;
 
   return (
-    <div className="flex h-full w-60 flex-col liquid-glass border-r border-white/[0.08] shrink-0 select-none z-10">
-      {/* ─── Search Tab View ─── */}
+    <div className="group/sidebar z-10 flex h-full w-60 shrink-0 select-none flex-col border-r border-rule bg-panel">
       {activeTab === "search" ? (
-        <div className="flex flex-col h-full">
-          <div className="border-b border-white/[0.06] px-3 py-2.5">
-            <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
-              <Search size={12} className="text-primary" />
-              Search
-            </span>
-          </div>
-          <div className="p-2.5">
-            <div className="flex items-center gap-1.5 rounded-lg bg-white/[0.04] px-2.5 py-1.5 border border-white/[0.08] focus-within:border-primary/60 shadow-inner">
-              <Search size={12} className="text-muted-foreground shrink-0" />
+        <div className="flex h-full flex-col">
+          <SectionHeader title="Search" />
+          <div className="px-3 pb-2">
+            <div className="flex h-8 items-center gap-1.5 rounded-md border border-rule bg-ink px-2.5 focus-within:border-primary/60">
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search across project files..."
-                aria-label="Search across project files"
-                className="w-full bg-transparent text-[11px] font-mono text-foreground outline-none placeholder:text-muted-foreground/50"
+                placeholder="Search in files"
+                aria-label="Search in files"
+                className="w-full bg-transparent text-[13px] text-foreground outline-none placeholder:text-faint"
                 autoFocus
               />
               {searchQuery && (
                 <button
+                  type="button"
                   onClick={() => setSearchQuery("")}
                   aria-label="Clear search"
-                  className="text-muted-foreground hover:text-foreground"
+                  className="rounded text-faint hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
                 >
-                  <X size={11} />
+                  <X size={13} />
                 </button>
               )}
             </div>
+            {searchQuery && searchResults.length > 0 && (
+              <p className="mt-2 text-[12px] text-faint">
+                {searchResults.reduce((n, r) => n + r.matches.length, 0)} results in {searchResults.length}{" "}
+                {searchResults.length === 1 ? "file" : "files"}
+              </p>
+            )}
           </div>
-          <div className="flex-1 overflow-y-auto px-2 space-y-2">
-            {files.length === 0 && (
-              <p className="text-[11px] text-muted-foreground/60 text-center py-6">No files to search yet</p>
-            )}
+          <div className="flex-1 overflow-y-auto pb-2">
+            {files.length === 0 && <p className="px-3 text-[13px] text-muted-foreground">No files to search yet.</p>}
             {searchQuery && files.length > 0 && searchResults.length === 0 && (
-              <p className="text-[11px] text-muted-foreground/60 text-center py-6">No matches found</p>
+              <p className="px-3 text-[13px] text-muted-foreground">No results for "{searchQuery}".</p>
             )}
-            {searchResults.map(({ file, matches }) => (
-              <div key={file.id} className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2 space-y-1">
-                <button
-                  onClick={() => onSelectFile(file.id)}
-                  className="flex items-center gap-1.5 text-[11px] font-medium text-foreground hover:text-primary transition-colors w-full text-left"
-                >
-                  <FileCode size={12} className="text-primary shrink-0" />
-                  <span className="truncate flex-1 font-mono">{file.name}</span>
-                  <span className="text-[9px] text-muted-foreground rounded bg-white/[0.06] px-1">{matches.length}</span>
-                </button>
-                <div className="pl-4 space-y-1">
+            {searchResults.map(({ file, matches }) => {
+              const Glyph = fileGlyph(file.name);
+              return (
+                <div key={file.id} className="mb-1">
+                  <button
+                    type="button"
+                    onClick={() => onSelectFile(file.id)}
+                    className="flex h-[22px] w-full items-center gap-1.5 px-3 text-left text-[13px] text-foreground hover:bg-raised focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary"
+                  >
+                    <Glyph size={14} aria-hidden className="shrink-0 text-faint" />
+                    <span className="min-w-0 flex-1 truncate">{file.name}</span>
+                    <span className="tabular-nums text-[12px] text-faint">{matches.length}</span>
+                  </button>
                   {matches.slice(0, 5).map((m, i) => (
-                    <div
+                    <button
+                      type="button"
                       key={i}
                       onClick={() => onSelectFile(file.id)}
-                      className="text-[10px] font-mono text-muted-foreground hover:text-foreground cursor-pointer truncate"
+                      className="flex h-[22px] w-full items-center gap-2 pl-8 pr-3 text-left font-mono text-[12px] text-muted-foreground hover:bg-raised hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary"
                       title={m.text}
                     >
-                      <span className="text-primary/70 mr-1.5">{m.lineNum}:</span>
-                      <span>{m.text}</span>
-                    </div>
+                      <span className="w-6 shrink-0 text-right tabular-nums text-faint">{m.lineNum}</span>
+                      <span className="truncate">{m.text}</span>
+                    </button>
                   ))}
+                  {matches.length > 5 && (
+                    <p className="pl-8 text-[12px] text-faint">{matches.length - 5} more in this file</p>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       ) : activeTab === "timeline" ? (
-        /* ─── Timeline Tab View ─── */
-        <div className="flex flex-col h-full">
-          <div className="border-b border-white/[0.06] px-3 py-2.5 flex items-center justify-between">
-            <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
-              <History size={12} className="text-primary" />
-              Timeline History
-            </span>
-            <span className="text-[10px] text-muted-foreground font-mono truncate ml-2">{activeFile?.name}</span>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+        <div className="flex h-full flex-col">
+          <SectionHeader title="Timeline" count={timelineEntries.length} />
+          {activeFile && (
+            <p className="-mt-1 truncate px-3 pb-2 font-mono text-[12px] text-faint" title={activeFile.name}>
+              {activeFile.name}
+            </p>
+          )}
+          <div className="flex-1 overflow-y-auto">
             {timelineEntries.length === 0 ? (
-              <div className="text-center py-10 px-3 text-muted-foreground/60 space-y-1">
-                <History size={20} className="mx-auto text-muted-foreground/30 mb-2" />
-                <p className="text-[11px]">
-                  {activeFile ? "No timeline revisions recorded yet." : "Open a file to see its history."}
-                </p>
-                <p className="text-[10px]">Changes and saves will appear here automatically.</p>
-              </div>
+              <p className="px-3 text-[13px] leading-relaxed text-muted-foreground">
+                {activeFile
+                  ? "No versions yet. A version is saved each time you run or save this file."
+                  : "Open a file to see its earlier versions."}
+              </p>
             ) : (
-              timelineEntries.map((entry) => (
-                <div
-                  key={entry.id}
-                  className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5 hover:bg-white/[0.06] transition-all space-y-1.5 group"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-semibold text-foreground flex items-center gap-1.5">
-                      <Sparkles size={11} className="text-primary" />
-                      {entry.label}
-                    </span>
-                    <span className="text-[10px] text-muted-foreground">
-                      {formatRelativeTime(entry.timestamp)}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between text-[10px] text-muted-foreground/70 font-mono">
-                    <span>{entry.lineCount} lines · {entry.charCount} chars</span>
+              <ul>
+                {timelineEntries.map((entry) => (
+                  <li
+                    key={entry.id}
+                    className="group flex items-center gap-2 border-b border-rule/60 px-3 py-2 last:border-b-0 hover:bg-raised/60"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13px] text-foreground">{entry.label}</p>
+                      <p className="text-[12px] text-faint">
+                        {formatRelativeTime(entry.timestamp)}, {entry.lineCount} lines
+                      </p>
+                    </div>
                     {onRestoreSnapshot && (
                       <button
+                        type="button"
                         onClick={() => onRestoreSnapshot(entry.content)}
-                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 flex items-center gap-1 rounded bg-primary/20 px-2 py-0.5 text-primary hover:bg-primary hover:text-primary-foreground transition-all"
-                        title="Restore this version"
+                        className="h-6 shrink-0 rounded-md border border-rule px-2 text-[12px] text-muted-foreground opacity-0 transition-opacity hover:bg-raised hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary group-hover:opacity-100 [@media(hover:none)]:opacity-100"
                       >
-                        <RotateCcw size={10} />
                         Restore
                       </button>
                     )}
-                  </div>
-                </div>
-              ))
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
         </div>
       ) : (
-        /* ─── Explorer Tab View (Full VS Code Folder Tree) ─── */
-        <div className="flex flex-col h-full">
-          {/* Explorer Header Toolbar */}
-          <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-2 bg-white/[0.02]">
-            <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/90">
-              Explorer
-            </span>
-            <div className="flex items-center gap-0.5">
-              {/* New File */}
-              <button
-                onClick={() => startCreate("file", "")}
-                className="rounded p-1 text-muted-foreground/70 transition-colors hover:bg-white/[0.08] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-                title="New File"
-                aria-label="New file"
-              >
-                <FilePlus size={13} />
-              </button>
+        <div className="flex h-full flex-col">
+          <SectionHeader
+            title="Explorer"
+            actions={
+              <>
+                <IconButton label="New file" shortcut={shortcutFor("new-file")} side="bottom" onClick={() => startCreate("file", "")}>
+                  <FilePlus size={14} />
+                </IconButton>
+                <IconButton label="New folder" side="bottom" onClick={() => startCreate("folder", "")}>
+                  <FolderPlus size={14} />
+                </IconButton>
+                {onUploadFiles && (
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      onChange={handleFileUpload}
+                      className="hidden"
+                      accept={ACCEPTED_EXTENSIONS}
+                      aria-label="Upload files"
+                      tabIndex={-1}
+                    />
+                    <IconButton label="Upload files" side="bottom" onClick={() => fileInputRef.current?.click()}>
+                      <Upload size={14} />
+                    </IconButton>
+                  </>
+                )}
+                <IconButton label="Collapse folders" side="bottom" onClick={collapseAllFolders}>
+                  <ListCollapse size={14} />
+                </IconButton>
+              </>
+            }
+          />
 
-              {/* New Folder */}
-              <button
-                onClick={() => startCreate("folder", "")}
-                className="rounded p-1 text-muted-foreground/70 transition-colors hover:bg-white/[0.08] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-                title="New Folder"
-                aria-label="New folder"
-              >
-                <FolderPlus size={13} />
-              </button>
-
-              {/* Collapse All */}
-              <button
-                onClick={collapseAllFolders}
-                className="rounded p-1 text-muted-foreground/70 transition-colors hover:bg-white/[0.08] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-                title="Collapse All Folders"
-                aria-label="Collapse all folders"
-              >
-                <FolderMinus size={13} />
-              </button>
-
-              {/* Upload Files */}
-              {onUploadFiles && (
-                <>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    onChange={handleFileUpload}
-                    className="hidden"
-                    accept={ACCEPTED_EXTENSIONS}
-                    aria-label="Upload files"
-                  />
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="rounded p-1 text-muted-foreground/70 transition-colors hover:bg-white/[0.08] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-                    title="Upload Files"
-                    aria-label="Upload files"
-                  >
-                    <Upload size={13} />
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto px-1.5 py-1.5 flex flex-col justify-between">
-            <div role="tree" aria-label="Project files">
-              {/* Root Project Folder Row */}
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div role="tree" aria-label="Project files" className="min-h-0 flex-1 overflow-y-auto pb-2">
+              {/* Project root */}
               <div
                 role="treeitem"
                 aria-expanded={rootExpanded}
+                aria-level={0}
                 tabIndex={0}
                 onClick={() => setRootExpanded((prev) => !prev)}
                 onKeyDown={(e) => {
@@ -805,96 +802,95 @@ const Sidebar = ({
                     setRootExpanded((prev) => !prev);
                   }
                 }}
-                className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-semibold text-foreground/90 hover:bg-white/[0.05] transition-colors cursor-pointer group mb-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                className={cn(rowBase, "pl-2 font-semibold text-foreground hover:bg-raised")}
               >
-                <span className="text-muted-foreground/60">
-                  {rootExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-                </span>
-                <FolderOpen size={13} className="text-primary shrink-0" />
-                <span className="truncate flex-1 font-bold tracking-tight">
-                  {projectName || "zuup-project"}
-                </span>
-
+                <ChevronRight
+                  size={12}
+                  aria-hidden
+                  className={cn(
+                    "shrink-0 text-faint transition-transform duration-150 motion-reduce:transition-none",
+                    rootExpanded && "rotate-90"
+                  )}
+                />
+                <span className="min-w-0 flex-1 truncate text-[12px]">{projectName || "zuup-project"}</span>
                 {isCloudProject && (
-                  <span title={hasUnsavedChanges ? "Unsaved changes" : "Saved to cloud"}>
-                    {hasUnsavedChanges ? (
-                      <CloudOff size={11} className="text-amber-400/80" />
-                    ) : (
-                      <Cloud size={11} className="text-emerald-400/80" />
-                    )}
+                  <span
+                    className="mr-1 text-[12px] font-normal text-faint"
+                    title={hasUnsavedChanges ? "Changes not yet saved to the cloud" : "Saved to the cloud"}
+                  >
+                    {hasUnsavedChanges ? "Unsaved" : "Saved"}
                   </span>
                 )}
               </div>
 
-              {/* Tree Content */}
               {rootExpanded && (
-                <div className="space-y-0.5" role="group">
-                  {/* Inline creation at root level */}
-                  {renderCreateRow("", "20px")}
+                <div role="group" className="relative">
+                  {renderCreateRow("", 0)}
 
-                  {/* Empty workspace hint */}
                   {isWorkspaceEmpty && !creating && (
-                    <div className="px-3 py-4 text-center">
-                      <p className="text-[11px] text-muted-foreground/70">This workspace is empty.</p>
+                    <div className="px-3 pt-2">
+                      <p className="text-[13px] leading-relaxed text-muted-foreground">
+                        This project has no files yet.
+                      </p>
                       <button
+                        type="button"
                         onClick={() => startCreate("file", "")}
-                        className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-primary/15 px-2.5 py-1 text-[11px] font-medium text-primary hover:bg-primary/25 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                        className="mt-2 h-7 rounded-md border border-rule px-2.5 text-[13px] text-foreground transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
                       >
-                        <FilePlus size={12} />
                         New file
                       </button>
                     </div>
                   )}
 
-                  {/* Hierarchical Nodes */}
                   {treeNodes.map((node) => renderTreeNode(node, 0))}
                 </div>
               )}
             </div>
 
-            {/* ─── Timeline Accordion at bottom ─── */}
-            <div className="mt-4 border-t border-white/[0.06] pt-2">
+            {/* Timeline: earlier versions of the open file */}
+            <div className="shrink-0 border-t border-rule">
               <button
+                type="button"
                 onClick={() => setTimelineOpen((prev) => !prev)}
                 aria-expanded={timelineOpen}
-                className="flex w-full items-center justify-between px-1 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+                className="flex h-8 w-full items-center gap-1 px-2 text-left text-[12px] font-semibold text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary"
               >
-                <div className="flex items-center gap-1.5">
-                  {timelineOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-                  <span className="flex items-center gap-1">
-                    <History size={11} className="text-primary/70" />
-                    Timeline
-                  </span>
-                </div>
+                <ChevronRight
+                  size={12}
+                  aria-hidden
+                  className={cn(
+                    "text-faint transition-transform duration-150 motion-reduce:transition-none",
+                    timelineOpen && "rotate-90"
+                  )}
+                />
+                Timeline
                 {timelineEntries.length > 0 && (
-                  <span className="rounded bg-white/[0.08] px-1 text-[9px] text-muted-foreground font-mono">
-                    {timelineEntries.length}
-                  </span>
+                  <span className="ml-1 font-normal tabular-nums text-faint">{timelineEntries.length}</span>
                 )}
               </button>
 
               {timelineOpen && (
-                <div className="mt-1 space-y-1 max-h-36 overflow-y-auto pl-1 pr-1">
+                <div className="max-h-36 overflow-y-auto pb-2">
                   {timelineEntries.length === 0 ? (
-                    <p className="text-[10px] text-muted-foreground/50 py-2 text-center">
-                      No history snapshots yet
+                    <p className="px-3 pb-1 text-[12px] text-faint">
+                      {activeFile ? "Versions appear here when you run or save." : "Open a file to see its versions."}
                     </p>
                   ) : (
                     timelineEntries.slice(0, 8).map((entry) => (
                       <div
                         key={entry.id}
-                        className="group flex items-center justify-between rounded px-2 py-1 text-[10px] text-muted-foreground hover:bg-white/[0.05] hover:text-foreground transition-colors"
+                        className="group flex h-[22px] items-center gap-2 pl-[22px] pr-1.5 text-[12px] text-muted-foreground hover:bg-raised hover:text-foreground"
                       >
-                        <span className="truncate flex-1 font-mono">
-                          {entry.label} · {formatRelativeTime(entry.timestamp)}
+                        <span className="min-w-0 flex-1 truncate">{entry.label}</span>
+                        <span className="shrink-0 text-faint group-hover:hidden group-focus-within:hidden">
+                          {formatRelativeTime(entry.timestamp)}
                         </span>
                         {onRestoreSnapshot && (
                           <button
+                            type="button"
                             onClick={() => onRestoreSnapshot(entry.content)}
-                            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-primary hover:underline ml-1 shrink-0 flex items-center gap-0.5"
-                            title="Restore snapshot"
+                            className="hidden shrink-0 rounded px-1 text-foreground underline-offset-2 hover:underline focus-visible:inline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary group-hover:inline group-focus-within:inline"
                           >
-                            <RotateCcw size={9} />
                             Restore
                           </button>
                         )}
@@ -904,22 +900,40 @@ const Sidebar = ({
                 </div>
               )}
             </div>
-          </div>
 
-          {/* Settings Footer */}
-          <div className="border-t border-white/[0.06] p-2 bg-white/[0.01]">
-            <button
-              onClick={onOpenSettings}
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground"
-            >
-              <Settings size={13} />
-              <span>Settings</span>
-            </button>
+            <div className="shrink-0 border-t border-rule px-1.5 py-1">
+              <button
+                type="button"
+                onClick={onOpenSettings}
+                className="flex h-7 w-full items-center rounded-md px-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-raised hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+              >
+                Settings
+              </button>
+            </div>
           </div>
         </div>
       )}
     </div>
   );
 };
+
+/** Sentence-case panel header; actions fade in on hover or keyboard focus. */
+function SectionHeader({ title, count, actions }: { title: string; count?: number; actions?: ReactNode }) {
+  return (
+    <div className="flex h-9 shrink-0 items-center justify-between pl-3 pr-1.5">
+      <h2 className="text-[12px] font-semibold text-muted-foreground">
+        {title}
+        {count !== undefined && count > 0 && (
+          <span className="ml-1.5 font-normal tabular-nums text-faint">{count}</span>
+        )}
+      </h2>
+      {actions && (
+        <div className="flex items-center opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover/sidebar:opacity-100 [@media(hover:none)]:opacity-100">
+          {actions}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default Sidebar;
